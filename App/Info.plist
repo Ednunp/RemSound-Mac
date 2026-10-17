@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>RemSound</string>
+<key>CFBundleIdentifier</key><string>org.remsound.mac</string>
+<key>CFBundleName</key><string>RemSound</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>6.2.1</string>
+<key>CFBundleVersion</key><string>624</string>
+<key>NSHumanReadableCopyright</key><string>Original RemSound © 2026 Ed Pourtahmasbi. Mac port © 2026 Andre Louis.</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>RemSound checks microphone access at launch, then captures your chosen input only when sending is enabled.</string>
+<key>NSAudioCaptureUsageDescription</key><string>RemSound checks system audio access at launch, then sends Mac playback only when you enable system audio sending.</string>
+<key>NSLocalNetworkUsageDescription</key><string>RemSound discovers peers and sends encrypted audio to the peers you select.</string>
+</dict></plist>

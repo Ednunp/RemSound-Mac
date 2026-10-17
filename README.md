@@ -1,0 +1,2109 @@
+# RemSound for Mac
+
+Version 6.2.1.
+
+RemSound lets you hear and send audio between computers. You can play together, listen to a shared session, send a microphone or an application's sound, and bring other people's audio into your DAW.
+
+The original RemSound is by [Ed Pourtahmasbi](https://github.com/Ednunp/RemSound). The Mac version is developed by Andre Louis.
+
+This manual covers the Mac app and its AU, VST3 and CLAP plugins. Mac and Windows use the same release numbering, but their controls and available features can differ. For other versions, follow the links in [Credits and licences](#credits-and-licences).
+
+## Contents
+
+- [What's new](#whats-new)
+- [What you need](#what-you-need)
+- [Getting started](#getting-started)
+- [Finding your way around](#finding-your-way-around)
+- [Connecting to people](#connecting-to-people)
+- [Choosing what to send](#choosing-what-to-send)
+- [Listening on your Mac](#listening-on-your-mac)
+- [Delay and audio dropouts](#delay-and-audio-dropouts)
+- [Push to talk](#push-to-talk)
+- [Profiles and passwords](#profiles-and-passwords)
+- [Names, volume, pan and EQ](#names-volume-pan-and-eq)
+- [Recording](#recording)
+- [Using a DAW](#using-a-daw)
+- [The metronome](#the-metronome)
+- [Listening in a browser](#listening-in-a-browser)
+- [Preferences and sounds](#preferences-and-sounds)
+- [Keyboard and VoiceOver](#keyboard-and-voiceover)
+- [Updates](#updates)
+- [If something isn't working](#if-something-isnt-working)
+- [Your files and privacy](#your-files-and-privacy)
+- [Command-line options](#command-line-options)
+- [Credits and licences](#credits-and-licences)
+- [Main-window control reference](#main-window-control-reference)
+- [Dialog control reference](#dialog-control-reference)
+- [Menu-bar control reference](#menu-bar-control-reference)
+- [Plugin control reference](#plugin-control-reference)
+
+## What's new
+
+Version 6.2.1 brings together the Mac connection, audio, recording and plugin work. Its features include:
+
+- A choice of asking, automatically accepting, or manually selecting people who want to connect to you.
+- Receive-buffer auto-tuning and an optional lowest-delay mode.
+- More metronome choices, including routing the click to a DAW and including it in recordings.
+- A plugin list for choosing several people to hear on a track.
+- More startup, appearance, shortcut and logging preferences.
+- A rewritten Mac manual with linked contents and help for individual controls.
+
+## What you need
+
+- A Mac running macOS 14 or later, with Apple Silicon or an Intel processor.
+- An input device if you want to send a microphone or instrument, and an output device or headphones for listening.
+- A reachable RemSound computer or server. Other people may use Mac or Windows.
+- The same connection password as the people you want to hear.
+- For DAW use, a host that supports AU, VST3 or CLAP. Logic uses the AU plugin.
+
+System-audio capture needs macOS 14.2 or later. Set selected capture devices to 48 kHz in Audio MIDI Setup. A shared audio interface may also need a compatible setting in your DAW.
+
+Headphones are a good choice for your first session. They help keep the sound you receive from being picked up by your microphone and sent back to everyone else.
+
+## Getting started
+
+1. Download the Mac ZIP from the [Mac releases page](https://github.com/OnjLouis/RemSound-Mac/releases), extract it, and drag RemSound into Applications. Replace an older copy if asked. Your profiles and saved settings are stored separately. Open RemSound from Applications.
+2. Allow the microphone or system-audio permissions you intend to use. You can review them later in **RemSound → Preferences → Permissions**. Allowing access does not turn on sending by itself.
+3. In **Connectivity**, enter your name and the shared connection password. Your name is what other people see; it is separate from the name of a saved profile.
+4. In **Audio I/O**, leave sending off at first. Enable **Receive peer audio for app and DAW**, choose a Mac playback output, and enable **Play received audio through Mac output** if you want to listen through the app.
+5. Choose **Start**. Connect to a person directly or join a server, as explained below. For a direct connection, both people need to select one another, or accept the incoming connection when asked.
+6. When you can hear the session, select your microphone or interface and turn on input sending. Ask someone to confirm that they hear you before adding system audio or a DAW track.
+
+Choose **Stop** to disconnect and stop the current audio session. Closing the window only hides it; **Quit RemSound**, Command-Q, ends the app.
+
+## Finding your way around
+
+The main window has four sections:
+
+| Section | What you do there |
+| --- | --- |
+| Connectivity | Enter connection details, select people, manage remembered peers and open browser-listening settings. |
+| Audio I/O | Choose what to send and where to listen; adjust receive buffering, push to talk and local listening volume. |
+| Recording / Profiles | Choose recording options and open or save profiles. |
+| Pan / EQ | Adjust the sound of individual people. |
+
+Use Command-1 through Command-4 to select a section. Control-Tab and Control-Shift-Tab move between sections. Preferences lets you change their order or hide Pan / EQ.
+
+The connection and status fields explain what RemSound is doing. They can be focused, selected and read again; you do not have to catch a spoken message as it happens.
+
+When all RemSound windows are closed, its menu-bar item remains available. Use it to show the window, open Preferences, start or stop a session, or change the main audio switches. Hiding the app leaves audio running. Use Quit when you want it to stop completely.
+
+## Connecting to people
+
+### On the same network
+
+Start RemSound on both computers with the same password. Nearby peers can appear in the list. Use Up and Down to highlight someone, then Space to select or deselect them. Selecting a person means you want to exchange audio with them; simply highlighting a row does not connect it.
+
+### By address
+
+Enter the other computer's IPv4 address or hostname. Add `:port` if they use a different port. An example address is `192.168.1.20`; use the address the other person gives you, not this example.
+
+The initial peer field is used when you start a session. During a session, **Add peer IPv4 address or hostname** adds another person without replacing your current selections. **Cancel Add**, or Escape while the lookup is pending, cancels that request.
+
+Remembered peers are available across profiles on this Mac. Return or Space connects the highlighted remembered peer. Delete forgets the remembered entry without disconnecting an already selected person. Clearing remembered peers does not delete profiles.
+
+**Keep peer addresses exactly as saved in this profile** prevents RemSound from following a known person to a changed address. This is different from making the profile read only.
+
+### When someone selects you
+
+**Preferences → Accept connections from other peers** controls what happens when someone using your password selects you before you have selected them:
+
+- **Ask me each time** asks whether to select them back.
+- **Automatically** selects them back without asking.
+- **Manual** leaves selection to you.
+
+Someone you deliberately deselect is not immediately added back. This choice does not let people with a different password connect.
+
+### Through a server
+
+Open **Server → Connect to Server**, or press Command-K. Enter a server address or choose a remembered server. Connect starts RemSound if needed and joins using the current profile's password. People on the server who use that password form your group.
+
+Disconnect in the server window leaves the server. It does not remove your separate direct connections. Close only closes the window.
+
+If RemSound warns that the server is out of date, you can cancel, visit its source page, or explicitly connect anyway. Visiting the page does not answer the warning for you.
+
+### Router access
+
+The Connectivity option **Automatically open my router for incoming connections** is off by default. When enabled, RemSound asks a compatible router to forward the current audio port. The status field shows the result.
+
+A successful mapping is not a guarantee that someone on the Internet can reach you. Your network may use another router or carrier-grade NAT. A VPN or a shared server may be more suitable. Turning the option off or stopping RemSound starts cleanup of its mapping; follow any reported cleanup error rather than assuming the port is closed.
+
+## Choosing what to send
+
+### A microphone or interface
+
+In **Audio inputs to send**, select **System default input** or choose named devices. The default follows the Mac's input choice; named devices stay tied to those devices. Selecting the default clears named-input selections.
+
+Selecting an input enables input sending. Clearing the last selected input turns it off. You can also turn **Send selected audio input** off without forgetting your device choices.
+
+For an interface with several channels, choose stereo pairs such as 1/2 or 3/4 in **Professional interface input pairs**. A selected pair also selects its interface. Several selected sources are mixed, so check levels when combining them.
+
+### Sound from applications
+
+**Send Mac system audio** is separate from microphone sending. Choose whole output devices or specific applications, then select the sources you want.
+
+**All system outputs** captures the Mac's overall stereo mix. Choosing individual outputs or applications gives you more control over what other people hear. Multichannel output devices have a separate pair list.
+
+Avoid capturing RemSound's own playback and sending it back. If you send a DAW track through the plugin as well, also capturing that DAW's output can send the same sound twice.
+
+### Codec and packet size
+
+**Opus live** is a useful starting point for live playing. **Opus broadcast** trades a larger packet duration for compressed audio. **PCM** sends uncompressed audio and uses more network bandwidth.
+
+**Standard** packet size is the normal starting point. **Small** can reduce packet delay on a stable network, at the cost of sending more packets. The choice applies to ordinary input, system-audio and DAW sending. Live Opus and custom modes have their own frame sizes.
+
+Custom codec choices are advanced options. Use them only when the other end supports the same mode and you have checked the result by listening.
+
+## Listening on your Mac
+
+Receiving and local playback are separate:
+
+- **Receive peer audio for app and DAW** allows incoming peer audio.
+- **Play received audio through Mac output** plays it through the app's selected outputs.
+- A DAW plugin's **Receive peers onto this track** adds audio to that track.
+
+For DAW-only listening, leave app playback off. This avoids hearing both the app and the DAW at different delays.
+
+In **Mac playback outputs**, select the system default or named devices. You can send the same received mix to several named outputs. For multichannel devices, use **Mac playback output pairs** to choose the pairs you need. Checking a new output or pair enables app playback; clearing the last one disables it.
+
+**Listening volume** and **Mute received audio** affect the app's local received sound. They do not stop the connection or switch off a DAW track's Receive control. Metronome volume is separate.
+
+## Delay and audio dropouts
+
+Less buffering feels more immediate, but gives RemSound less time to cope with uneven packet delivery. If you hear gaps, start by increasing the receive buffer slightly. If the sound is reliable but feels late, reduce it in small steps and listen again.
+
+**Receive auto-tune** adjusts buffering as conditions change. When off, you choose the target yourself. Its interval controls how often the ordinary auto-tune reassesses the target.
+
+**Lowest-delay auto-tune** is an optional, more aggressive choice. It aims for a thinner buffer and accepts the possibility of an occasional dropout. Leave it off until you have a stable ordinary connection to compare it with.
+
+**Buffer smoothness** controls how strongly RemSound trims excess buffered audio. Lower values favour a tighter delay; higher values allow more extra audio to accumulate. At 10, excess-buffer trimming is disabled, but the other timing and safety limits still apply.
+
+**Receive gap sound** chooses how an empty receive interval is heard. Noise burst gives a short noise cue and a fade back into audio; Click uses silence without that fade. This changes how a gap sounds, not whether packets are lost.
+
+Status may show ping and estimated total latency. Ping is a round trip across the network, not the time from an instrument to another person's ears. An unknown stage or estimate has not been measured; do not treat it as zero.
+
+## Push to talk
+
+Open **Push to talk settings** in Audio I/O. Choose which sources it controls, then use a key or a sound-level threshold to decide when audio is sent.
+
+- **Hold to speak** sends while the key is held.
+- With hold and double-tap modes off, each press switches talking on or off.
+- **Double tap to hold** locks talking on after a double tap; a single tap releases it.
+- Sound-level mode opens the gate when the chosen threshold is reached.
+
+The shortcut is saved for this Mac. The source and gate choices belong to the profile. OK applies your edits; Cancel, Escape or closing the settings window discards them.
+
+**Recording bypass** can record sent audio while push to talk is closed. **DAW bypass** lets DAW sending continue through the gate. Leave these off if you expect push to talk to keep that audio out of recordings or DAW sends too.
+
+## Profiles and passwords
+
+A profile is a named setup: connection details, audio choices, recording options and peer-mix settings. Use **Profiles → Save Profile As** to make your first saved setup. Command-S saves later changes.
+
+**Quick Profile Switch**, Command-Shift-P, lists saved profiles and marks the current one. Use arrows and Return to choose; Escape cancels. Choosing the current profile leaves it alone. RemSound deals with unsaved changes and an active session before switching, so cancelling that question keeps the current setup.
+
+Recent Profiles lists the last five opened profiles. You can also choose a particular startup profile in Preferences.
+
+### Read-only profiles
+
+Lock a profile when you want to try temporary changes without accidentally saving them. Automatic saving does not overwrite a read-only profile. An explicit Save can still overwrite it after confirmation; Save Profile As makes a separate copy instead.
+
+Automatic saving is available for changed, already saved, writable profiles. It does not create a name for an unsaved setup.
+
+### Password storage
+
+The connection password is kept separately from the profile file. **Remember password in Mac Keychain** controls whether RemSound remembers it on this Mac. Forget Saved Password removes the saved secret; copying a profile does not copy its password to another Mac.
+
+Automatic reconnection needs an available saved password. Check your sending choices before enabling it: a reconnect restores the profile's audio choices too.
+
+You can choose another profiles folder in Preferences, including a shared folder. That choice takes effect on the next launch. Keep a backup before moving or replacing profiles, and remember that the other Mac still needs its password entered separately.
+
+## Names, volume, pan and EQ
+
+Highlight a peer and press F2 to give them a friendly name. Clearing the name restores the name they announce. These names apply across profiles on this Mac; renaming someone does not change their connection or password.
+
+In **Pan / EQ**, choose the peer you want to adjust. Enable shaping for all peers, then enable it for the selected peer. Each person's volume, pan and EQ choices are kept separately. Bypassing shaping leaves the values available for later.
+
+Choose the EQ mode before adjusting its bands. **Add band** creates a parametric boost or cut across a frequency range. **Reset EQ** flattens the selected person's EQ without resetting their volume or pan.
+
+On volume, pan and EQ sliders, Return or keypad Enter restores the default: full volume, centre pan or flat EQ. Metronome volume resets to 70 percent.
+
+**Accept remote volume commands from peers** is off by default. Enabling it lets selected peers using the shared password change your received listening volume and mute, and your Mac's system output volume and mute. This can affect what you hear from other applications too.
+
+## Recording
+
+Set the recording choices before starting:
+
+| Choice | Meaning |
+| --- | --- |
+| Source | Sent audio, received audio, or both. |
+| Format | WAV, FLAC, MP3 or Ogg Opus, with the depth or bitrate shown in the list. |
+| Channels | Stereo keeps left and right separate; mono mixes them equally. |
+| Split recording | Separate files for the selected peers present when recording begins, with a local-send file if included. |
+| Bypass pan and EQ | Record received audio before the listening adjustments described below. |
+
+Use Command-E, the recording button, or **Record → Start or Stop Recording**. Choose a destination with **Change Recordings Folder**. The default is **RemSound Recordings** in your Music folder, with recordings grouped by date. Command-Shift-O opens the recordings folder in Finder.
+
+WAV offers 16-bit, 24-bit and 32-bit float choices. FLAC is lossless, with 16- or 24-bit audio; compression level 0 is fastest and 8 aims for smaller files. MP3 offers 128, 192, 256 and 320 kbps. Ogg Opus offers 96, 128, 192 and 256 kbps. These recordings use 48 kHz audio.
+
+In a split recording, people who arrive later are not added halfway through. Start a new recording if you want the new group in separate tracks.
+
+Normally, received recordings include peer volume, pan and EQ. **Bypass pan and EQ when recording** records before those adjustments; a mixed recording also bypasses the app's received listening volume and mute. Live listening keeps its own adjustments. Choose this before recording starts.
+
+Stop recording before moving or copying the finished files. RemSound needs time to finish their headers and buffered audio. If shutdown cannot finish a recording, the app stays open rather than pretending it is safe to quit. Read the status message and retry when the disk is available.
+
+## Using a DAW
+
+The app handles the network connection; the plugin brings audio into and out of a track. Keep RemSound running and enable **Allow DAW plugins on this Mac**.
+
+Use AU in Logic, or the format supported by your other host. The usual user plugin folders are:
+
+| Format | Folder |
+| --- | --- |
+| AU | `~/Library/Audio/Plug-Ins/Components` |
+| VST3 | `~/Library/Audio/Plug-Ins/VST3` |
+| CLAP | `~/Library/Audio/Plug-Ins/CLAP` |
+
+Use **DAW Plugin → Install Plugins** to copy the three formats into your user plugin folders. Save and close your DAW first; a host can keep using a plugin it has already loaded. Installation replaces RemSound's own plugins together and restores the previous copies if a change fails. Removal verifies that the bundles belong to RemSound before deleting them. A conflicting or modified bundle is left in place with an explanation.
+
+### Sending a track
+
+Insert RemSound as a stereo audio effect. In Logic, use the track's Audio FX slot. Enable **Active** and **Send this track to my peers**. The sound is taken from that point in the track's effect chain, so effects before RemSound are included and effects after it are not.
+
+The track's own signal continues through the plugin. The app's microphone switch is independent: sending a DAW track does not require sending a microphone. The host must actually process the track; depending on the DAW, you may need input monitoring or record-arm enabled.
+
+### Receiving on a track
+
+Enable **Receive peers onto this track**. Leave **Receive all peers** on for the whole session, including new arrivals. Turn it off to use **Peers to receive**: Space or Return ticks or unticks the highlighted person, and several people can be selected.
+
+The project remembers selected addresses, so reordering the list does not make the track follow a different person. **Peer cursor** remains available for host automation and selects one person at a time.
+
+Turn the app's Mac output playback off if you want to hear only the DAW. Otherwise, you may hear a delayed second copy. The plugin's Send and Receive levels are separate; minus 60 dB means silence.
+
+F1 explains a plugin control. Shift-F1 opens its embedded manual. If the host uses F1 itself, use **Context help** to read about the controls. Hosts handle keyboard focus and shortcuts differently; use your DAW's plugin-navigation commands to reach the editor.
+
+## The metronome
+
+Open **Metronome → Metronome Settings**, or press Command-Option-Comma. Choose tempo, time signature, sound, volume and where to hear the click. Changes preview while the window is open. OK keeps them; Cancel restores the opened settings.
+
+Without a server, the metronome is local to you. In a server session, one person can be the master and others follow. While following, tempo and time signature come from the master; your local click volume remains yours. Starting or stopping your listening click does not change what everybody else hears.
+
+**In RemSound** plays the click through the app. **In the DAW** adds Metronome to the plugin's peer list, where you can select it on a track. **Include the click in RemSound's recordings** is off by default and applies when the click is heard in the app; a DAW records its own track instead.
+
+Choose Click, Woodblock, Beep, Rim or Cowbell, or add your own WAV sounds in the Metronome sounds folder beside your profiles. A custom sound can use `Name accent.wav` and `Name beat.wav`, or a single `Name.wav`. A custom sound with a shipped name replaces that choice locally.
+
+**Unmute myself to test round trip** returns your own sent audio through a compatible server. Use headphones and avoid capturing the returned sound. Press it again to mute yourself. It also turns off when you leave the server, or when no return audio is received for five seconds.
+
+## Listening in a browser
+
+Open **Browser listener** from Connectivity. This lets other people listen to your outgoing sound in a browser without installing RemSound. Choose a suitable port and a separate browser-listening password. That password is shown in the settings window; it is not your shared audio connection password.
+
+You can prepare the settings while RemSound is stopped. When listening is available, give the listener the address and password. Their browser's audio support determines which offered format it can play. If Opus is unavailable, use the available PCM option.
+
+Automatic start in the browser is optional. Enabling it may store the browser password in that browser's local storage. It does not use Mac Keychain, so consider who else can use that browser profile.
+
+### A public address with Tailscale Funnel
+
+The Funnel button can ask Tailscale to make the listener reachable from the Internet. It may open approval pages; this is an explicit action, not something required for a local session.
+
+Public access can remain enabled after closing the settings window or choosing Cancel. Cancel restores RemSound's settings, not Tailscale's public service configuration. Use Tailscale's controls when you want to turn Funnel off.
+
+**Copy browser address** uses the address currently available for this listener. A displayed or copied address is not proof that another person's browser can connect or play audio. Have them try it before relying on it for a session.
+
+## Preferences and sounds
+
+Open **RemSound → Preferences**, Command-Comma. There are three tabs: General, Audio cues and Permissions. While Preferences is active, Command-1, Command-2 and Command-3 select those tabs.
+
+General includes startup and reconnection, appearance, section order, profile location, shortcuts, update choices and logging. You can follow the Mac's appearance or choose light or dark explicitly. Starting hidden puts RemSound in the menu bar; the menu brings its window back.
+
+### Audio cues
+
+The Audio cues tab has a global list and a profile list. Global cues apply to every profile on this Mac. Profile cues are saved with the current profile.
+
+Select an event with Up or Down to hear its chosen sound. **Choose sound**, **Play** and **Browse** apply to the last event selected in either list. Choose none to silence that event, a built-in choice, or a custom WAV. Sound 1 and Sound 2 are choices for that particular event, not the same sound for every event.
+
+**Turn all audio cues off** silences automatic cues, typing clicks and the plugin's Help cues. It keeps your sound choices. Manual previews in the cue list still play, so you can choose sounds while automatic cues are muted.
+
+Typing clicks are a profile choice. They apply to RemSound's own edit fields, including password fields, rather than recording keyboard activity in other apps. Secure fields have their own sound. Turn typing clicks off if you prefer silence while entering text.
+
+### Shortcuts and logs
+
+Optional global shortcuts start unset. Focus a shortcut field and press the combination you want; Delete clears it. Most ordinary keys need at least two modifiers, and function keys need one. Reserved system shortcuts cannot be assigned. Push to talk also accepts a single key.
+
+Enable logging only when you need it. The logging choice can be saved with the profile. You can add a marker with **Write logs now**, choose a log folder, or delete old logs using Preferences. Inspect logs before sharing them because connection names and addresses may be useful diagnostic details.
+
+## Keyboard and VoiceOver
+
+Use Tab and Shift-Tab to move between controls. On a list, Up and Down move the highlight; Space checks or unchecks the highlighted item. On a tab strip, Left and Right choose a tab. Standard Mac keyboard-navigation settings can affect which controls Tab reaches.
+
+F1 opens help for the focused control. The text is selectable and can be read with VoiceOver or the arrow keys. Escape or Command-W closes help and returns to the control. Shift-F1, the Help menu and **Open RemSound Manual** provide the full guide.
+
+On some keyboards you may need Fn with F1. If a DAW reserves the key, use the plugin's Context help button. A shortcut field does not assign plain F1 as a shortcut when it is being used for help.
+
+| Action | Shortcut |
+| --- | --- |
+| Start | Return, except on a slider or control that has its own Return action |
+| Stop | Command-Period |
+| Input sending | Command-I |
+| System-audio sending | Command-U |
+| Receiving | Command-R |
+| App playback | Command-L |
+| Allow or block DAW plugins | Command-D |
+| Start or stop recording | Command-E |
+| Select the highlighted peer | Space in the peer list, or Command-T |
+| Rename the highlighted peer | F2 |
+| New profile | Command-N |
+| Open profile | Command-O |
+| Save profile | Command-S |
+| Save Profile As | Command-Shift-S |
+| Quick Profile Switch | Command-Shift-P |
+| Open recordings folder | Command-Shift-O |
+| Main-window sections | Command-1 through Command-4 |
+| Next or previous section | Control-Tab or Control-Shift-Tab |
+| Preferences | Command-Comma |
+| Metronome settings | Command-Option-Comma |
+| Start or stop the metronome | Command-Option-M |
+| Hide RemSound | Command-H |
+| Show its main window while RemSound is active | Command-0 |
+| Quit | Command-Q |
+
+The optional global show/hide shortcut works while RemSound is not the active app. Configure it in Preferences if you want to return from a DAW without finding the menu-bar item.
+
+## Updates
+
+**Help → Check for Updates** looks for the Mac release. Preferences also offers startup and periodic checks. Checking is separate from automatically installing an update.
+
+RemSound checks the Mac release feed and verifies the signed package before replacing the app and plugins. When an update is available, save your work and close your DAW first. Your settings and profiles are kept. Do not close RemSound while it is finishing recording files.
+
+Only use the complete Mac package. The app and plugins need their accompanying resources and shared libraries; copying just an executable is not an installation.
+
+## If something isn't working
+
+### A person is listed, but I cannot hear them
+
+Check that you selected one another, that the shared password matches, and that they are actually sending audio. On your Mac, enable receiving and choose where to listen: the app's playback output or a DAW plugin's Receive control. Check local mute, listening volume and the selected person's volume too.
+
+### My microphone is not being sent
+
+Check the selected input, its channel pair, input sending and Microphone permission. If push to talk is enabled, make sure its gate is open. Permission on its own does not select an input or enable sending. Also check the device is set to 48 kHz.
+
+### I hear an echo or a second copy
+
+Try listening through either the app or the DAW, rather than both. Check that system capture is not sending RemSound's own output, or duplicating a track already sent by the plugin. Use headphones while finding the loop.
+
+### Audio clicks, drops out or feels late
+
+Compare with a slightly larger receive buffer before changing several settings at once. Check the selected devices and DAW processing, and compare ordinary auto-tuning with lowest-delay mode off. A higher ping or an unknown latency stage cannot be fixed just by lowering the buffer.
+
+### A selected device has disappeared
+
+Use Refresh audio devices and check the connection to the interface. A saved named device is not silently replaced with another one. Choose the replacement deliberately, or use the system-default option if you want to follow the Mac's current choice.
+
+### A plugin says the app is unavailable
+
+Open RemSound, start the intended session and allow DAW plugins. Check that the track is being processed and that Send or Receive is enabled in the plugin. Do not replace or remove a plugin while a project depends on its loaded copy.
+
+### A recording cannot finish
+
+Check the disk is connected, writable and has free space. Keep RemSound open while it reports pending work. Do not treat an error message as confirmation that a file is complete; check the finished recording before deleting its source or closing your session.
+
+## Your files and privacy
+
+Profiles are normally in RemSound's folder in `~/Library/Application Support`. Recordings are normally in `~/Music/RemSound Recordings`. The app's log-folder command opens the log location; custom choices can change where files are kept.
+
+Connection passwords are not stored in profile JSON, ordinary logs or DAW projects. Remembered connection passwords use Mac Keychain. Browser-listening passwords are separate; browser automatic start may save its password locally in the browser.
+
+Copying a profile is not a way to transfer its saved password. Custom cue and metronome sounds may also need copying separately. Back up your profiles and recordings before moving them or replacing a working installation.
+
+Logs and network recordings can contain information about a connection. Share them deliberately, not as part of a general app-folder ZIP. The app package itself is not a place to keep your profiles, recordings or private sounds.
+
+## Command-line options
+
+Command-line use is optional. These reports exit without starting an audio session:
+
+```sh
+/Applications/RemSound.app/Contents/MacOS/RemSound --help
+/Applications/RemSound.app/Contents/MacOS/RemSound --version
+/Applications/RemSound.app/Contents/MacOS/RemSound --list-profiles
+```
+
+Use the path of your own app copy if it is not in Applications. `--silent` suppresses cue sounds. `--minimized` starts with the main window hidden. For other available options, read that build's `--help`; diagnostic self-checks do not prove that real audio hardware or a DAW works.
+
+## Credits and licences
+
+[Ed Pourtahmasbi](https://github.com/Ednunp/RemSound) created the original RemSound and its Windows version. Andre Louis develops the Mac port.
+
+For Windows downloads and links to other editions, visit [Ed's main RemSound page](https://github.com/Ednunp/RemSound). This project distributes the Mac version only; other versions come from their respective maintainers.
+
+The app source retains its MIT licence. The JUCE-based plugin binaries are distributed under the GNU Affero General Public License, version 3. Their complete corresponding source is available alongside the downloads on the [Mac releases page](https://github.com/OnjLouis/RemSound-Mac/releases). Licence texts and other dependency notices are included with the app.
+
+## Main-window control reference
+
+The following entries are also used by F1. You can read this section for detail or ask for help while focused on a control.
+
+<!-- help-entry:main-name -->
+Your name
+
+Enter the name other people will see when you connect. It is separate from the name of your saved profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-peer -->
+First peer to connect to
+
+Enter a person's IPv4 address or hostname. Add a colon and port if they use a different port. RemSound uses this address when you start the session.
+<!-- /help-entry -->
+
+<!-- help-entry:main-password -->
+Connection password
+
+Enter the password agreed with the other people in your session. Everyone needs the same password. This help never reads the text you have entered.
+<!-- /help-entry -->
+
+<!-- help-entry:main-start -->
+Start
+
+Start the session using this profile's connection and audio choices. Sending starts only for sources you have enabled.
+<!-- /help-entry -->
+
+<!-- help-entry:main-stop -->
+Stop
+
+Disconnect and stop the current audio session. Your saved profiles remain available. Disconnect in the server window leaves just the server instead.
+<!-- /help-entry -->
+
+<!-- help-entry:main-table -->
+Select or rename the current peer
+
+Use Up and Down to move between people. Space selects or deselects the highlighted peer. F2 renames it; a context menu also offers Rename Peer.
+<!-- /help-entry -->
+
+<!-- help-entry:main-toggle -->
+Select the highlighted peer
+
+Select or deselect the highlighted person. Space in the peer list and Command-T do the same thing. Moving the highlight alone does not change selection.
+<!-- /help-entry -->
+
+<!-- help-entry:main-browserlistenerbutton -->
+Edit this profile's browser listener
+
+Edit browser listening for this profile. Choices may be staged without starting a listener. The browser password is separate from the audio connection password.
+<!-- /help-entry -->
+
+<!-- help-entry:main-codec -->
+Sending codec
+
+Choose lossless PCM or Opus compression. Changes also apply to DAW sends and saved profiles.
+<!-- /help-entry -->
+
+<!-- help-entry:main-packetsize -->
+Sending packet size
+
+Standard is the usual starting point. Small can reduce packet delay on a stable network, but sends more packets. This affects ordinary microphone, system-audio and DAW sending. Live Opus and custom modes use their own sizes. Save the profile to keep your choice.
+<!-- /help-entry -->
+
+<!-- help-entry:main-send -->
+Send selected audio input
+
+Send the microphone or interface inputs selected below. Turning this off keeps the device choices for later. System-audio sending and DAW track sending are separate.
+<!-- /help-entry -->
+
+<!-- help-entry:main-systemaudio -->
+System audio sending
+
+Send the chosen system outputs or applications to connected peers. Select the system capture mode and sources below. This switch does not enable microphone input.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receive -->
+Receive peer audio
+
+Allow incoming audio from selected people. Choose app playback or a DAW plugin to hear it. Turning app playback off does not turn receiving off.
+<!-- /help-entry -->
+
+<!-- help-entry:main-monitor -->
+Play received audio through Mac output
+
+Play incoming audio through the outputs chosen in this app. Turn this off for DAW-only listening, so you do not hear a second copy. Command-L changes the same choice.
+<!-- /help-entry -->
+
+<!-- help-entry:main-plugins -->
+Allow DAW plugins
+
+Let RemSound plugins on this Mac send tracks and receive audio. Each track still has its own Send and Receive switches. This does not enable microphone or system-audio sending.
+<!-- /help-entry -->
+
+<!-- help-entry:main-systemaudiomode -->
+System-audio sources
+
+Choose whole output devices to send their playback, or specific applications to send only the selected apps. Check that you are not sending RemSound's own received sound back to the session.
+<!-- /help-entry -->
+
+<!-- help-entry:main-inputtable -->
+Chosen capture inputs
+
+Choose System default input or named capture inputs. Space toggles a highlighted row. Selecting an input enables input sending; clearing the final input turns it off.
+<!-- /help-entry -->
+
+<!-- help-entry:main-inputpairtable -->
+Chosen capture channel pairs
+
+Choose stereo channel pairs for the selected multichannel inputs. Space toggles a pair. These choices belong to the profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-outputtable -->
+Chosen playback outputs
+
+Choose System default output or named Mac playback cards. Several cards can play the same received mix. Space toggles the highlighted output.
+<!-- /help-entry -->
+
+<!-- help-entry:main-outputpairtable -->
+Chosen playback channel pairs
+
+Choose stereo channel pairs on named playback cards. A checked pair also selects its card and enables Mac playback.
+<!-- /help-entry -->
+
+<!-- help-entry:main-systemoutputtable -->
+Chosen system capture outputs
+
+Choose All system outputs or individual system capture outputs. Space toggles a row. Capturing RemSound playback can create feedback; use headphones and choose sources deliberately.
+<!-- /help-entry -->
+
+<!-- help-entry:main-systemoutputpairtable -->
+Chosen system capture pairs
+
+Choose stereo pairs on multichannel system capture cards. A checked pair selects its card. All system outputs instead uses the global stereo mix.
+<!-- /help-entry -->
+
+<!-- help-entry:main-activeappstable -->
+Choose a running application for capture
+
+Choose currently running applications for application-specific system audio capture. The application capture mode determines whether this list is used.
+<!-- /help-entry -->
+
+<!-- help-entry:main-rememberedappstable -->
+Choose or forget remembered capture applications
+
+Choose or forget applications remembered for system audio capture. Entries remain available when an application is not currently running.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receivejitter -->
+Receive buffer
+
+Choose how much incoming audio to buffer. A lower value feels quicker but is less tolerant of uneven delivery. Increase it slightly if you hear gaps. A live change can briefly interrupt playback.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receivesmoothness -->
+Buffer smoothness
+
+Choose how strongly extra buffered audio is trimmed. Lower values favour a tighter delay. Higher values allow more extra buffering. At 10, excess-buffer trimming is off; clock correction, auto-tune and safety limits still apply. This choice is saved with the profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receiveartifact -->
+Receive gap sound
+
+Choose how a brief empty receive interval sounds. Noise burst gives a short noise cue, then fades back into real audio. Click uses silence without that fade. This changes the sound of a gap; it does not recover missing packets. Save the profile to keep the choice.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receiveautotune -->
+Receive auto-tune
+
+Let RemSound adjust buffering to the network and the Mac's audio timing. It raises the target when more time is needed and reduces it as conditions allow. Turn it off to keep the target you set yourself.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receiveautotuneinterval -->
+Auto-tune interval
+
+Choose how often ordinary auto-tune reassesses the buffer: 3, 5, 10, 15 or 30 seconds. Lowest-delay mode uses its own faster checks.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receivelowestdelay -->
+Lowest-delay auto-tune
+
+Aim for a thinner buffer, accepting the possibility of an occasional dropout. This needs auto-tune enabled. Leave it off until you have a reliable ordinary connection to compare it with. Save the profile to keep the choice.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receivelatencystatus -->
+Estimated total latency
+
+Read the estimated one-way delay and the parts RemSound can currently measure. An unknown value means that part of the path has not been measured; it does not mean zero delay.
+<!-- /help-entry -->
+
+<!-- help-entry:main-selfmonitoringbutton -->
+Toggle server self-monitoring
+
+Hear your own sent audio after its round trip through the connected server. Use headphones and avoid capturing RemSound's output. Press again to mute yourself. The test turns off if no audio returns for five seconds, and when you leave the server.
+<!-- /help-entry -->
+
+<!-- help-entry:main-selfmonitoringstatus -->
+Read-only self-monitoring status
+
+Read whether server self-monitoring is active, pending or stopped. The self-monitoring button changes it; this field only reports its status.
+<!-- /help-entry -->
+
+<!-- help-entry:main-listeningvolume -->
+Local received listening level
+
+How loud peers play through this Mac's outputs, from zero to one hundred percent. Use arrow keys to adjust; Return resets to one hundred percent. Recordings of received audio follow it; DAW plugins and the metronome do not. A peer can move it only if Accept remote volume commands from peers is on in Preferences.
+<!-- /help-entry -->
+
+<!-- help-entry:main-receivemute -->
+Local received listening mute
+
+Silences received audio on this Mac's outputs without stopping it; DAW plugins still receive. A peer can switch it only if Accept remote volume commands from peers is on in Preferences.
+<!-- /help-entry -->
+
+<!-- help-entry:main-uncheckalldevices -->
+Uncheck all inputs and outputs
+
+Unticks every input, output and system-audio output at once. Sending and monitoring stop until you tick a device again; sending that was on comes back then.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectionstatus -->
+Connection details
+
+Read the current connection summary, including peers, ping, available latency estimates and activity. You can focus this text to read it at your own pace. Speak status reads the summary without opening this window.
+<!-- /help-entry -->
+
+<!-- help-entry:main-peerdetails -->
+Peer details
+
+Read what RemSound knows about the highlighted person: their name, address, connection, ping and announced audio streams. These details do not change which person is selected.
+<!-- /help-entry -->
+
+<!-- help-entry:main-refreshdevices -->
+Refresh available audio devices
+
+Refresh the available capture and playback device lists. Existing choices follow their stable device identity rather than a row number.
+<!-- /help-entry -->
+
+<!-- help-entry:main-pushtotalkbutton -->
+Push to talk settings
+
+Choose whether a key or sound level controls sending, which sources it affects, and whether recording or DAW audio bypasses the gate. OK applies edits; Cancel leaves your current choices alone.
+<!-- /help-entry -->
+
+<!-- help-entry:main-metronomevolume -->
+Local metronome level
+
+Local metronome click volume from zero to one hundred percent. Use arrow keys to adjust; Return resets to seventy percent. This profile remembers it. Received audio volume, cue mute and other people's clicks are independent.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingsource -->
+Recording source
+
+Choose sent audio, received audio, or both for the next recording. Stop an existing recording before changing its setup.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingformat -->
+Recording format
+
+Choose WAV, lossless FLAC, MP3 or Ogg Opus. The list shows the available sample depths or bitrates. Recordings use 48 kHz audio; the new choice applies to the next recording.
+<!-- /help-entry -->
+
+<!-- help-entry:main-flaccompression -->
+Next FLAC compression effort
+
+For FLAC recordings: 0 is fastest, 8 makes smaller files, and 5 is the default. All levels are lossless; 16- or 24-bit depth is chosen separately in Recording format. Saved in the profile; takes effect on the next recording.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingchannels -->
+Recording channels
+
+Choose stereo to keep left and right separate, or mono to mix them equally into one channel. This applies to the next recording.
+<!-- /help-entry -->
+
+<!-- help-entry:main-splitrecording -->
+Split recording into peer tracks
+
+Make separate files for the selected peers present when recording begins, and a local-send file if included. People who arrive later are not added halfway through; start a new recording to include the new group.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingbypassshaping -->
+Record before shaping
+
+Record received audio before peer volume, pan and EQ, and before mixed listening volume or mute. Live listening and DAW audio keep their shaping. Applies to mixed and split files; changes take effect on the next recording. Saved in the current profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingbutton -->
+Start or finish recording
+
+Command-E. Start or stop a 48 kHz recording in your chosen recordings folder.
+<!-- /help-entry -->
+
+<!-- help-entry:main-recordingsfolderbutton -->
+Choose recordings folder
+
+Choose the folder for future recordings using the native folder picker. Cancel keeps the previous destination.
+<!-- /help-entry -->
+
+<!-- help-entry:main-openprofilebutton -->
+Open a saved profile
+
+Choose a saved profile. Unsaved changes and an active recording are resolved before replacing the current profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-saveprofilebutton -->
+Save the current profile
+
+Save the current profile, including its audio and peer settings. A read-only profile requires explicit overwrite confirmation.
+<!-- /help-entry -->
+
+<!-- help-entry:main-saveasprofilebutton -->
+Save as another profile
+
+Save the current settings with another profile name. Cancel leaves the current profile and its unsaved changes intact.
+<!-- /help-entry -->
+
+<!-- help-entry:main-profilenotice -->
+Read-only active profile status
+
+Read the current profile status, including unsaved or read-only changes. Saving a read-only profile requires an explicit decision.
+<!-- /help-entry -->
+
+<!-- help-entry:main-intro -->
+Connecting and listening
+
+Use Connectivity to enter your name and password, connect directly or through a server, and select people. Start opens the session. Stop disconnects and stops its audio.
+<!-- /help-entry -->
+
+<!-- help-entry:main-profileintro -->
+Recording and profiles
+
+Set up your next recording or open and save named setups here. Before switching profiles, RemSound asks about unsaved changes and finishes an active recording.
+<!-- /help-entry -->
+
+<!-- help-entry:main-allpeershaping -->
+Enable per-peer shaping
+
+Off by default. When on, each peer's volume, pan and EQ below are heard, for every peer whose own Shape selected peer box is checked. When off, everyone plays untouched and the settings are kept.
+<!-- /help-entry -->
+
+<!-- help-entry:main-mixpeer -->
+Choose peer to shape
+
+Choose a peer for volume, pan and equalizer. This follows the highlighted peer in Connectivity.
+<!-- /help-entry -->
+
+<!-- help-entry:main-peermixenabled -->
+Selected peer shaping
+
+Shape this peer: its volume, pan and EQ are heard while Enable volume, pan and EQ for all peers is on. Unchecked, it plays untouched and keeps its settings. Saved in the current profile.
+<!-- /help-entry -->
+
+<!-- help-entry:main-peervolume -->
+Selected peer volume
+
+Volume for the highlighted peer, from zero to one hundred percent. Use arrow keys to adjust; Return resets to one hundred percent.
+<!-- /help-entry -->
+
+<!-- help-entry:main-peerpan -->
+Selected peer pan
+
+Pan for the highlighted peer, from full left through centre to full right. Use arrow keys to adjust; Return resets to centre.
+<!-- /help-entry -->
+
+<!-- help-entry:main-eqmode -->
+Selected peer equalizer mode
+
+Each EQ keeps its own settings; only the one chosen here is heard for this peer.
+<!-- /help-entry -->
+
+<!-- help-entry:main-addbandbutton -->
+Add a parametric band
+
+Add a boost or cut across a range of frequencies, up to 16 bands. You hear it as you type.
+<!-- /help-entry -->
+
+<!-- help-entry:main-bandlist -->
+Select, nudge or delete parametric bands
+
+Bass to treble. Left and Right move the selected bands half a decibel; Delete removes them.
+<!-- /help-entry -->
+
+<!-- help-entry:main-deletebandbutton -->
+Delete selected parametric bands
+
+Remove the bands selected in the list.
+<!-- /help-entry -->
+
+<!-- help-entry:main-resetpeereq -->
+Flatten selected peer equalizers
+
+Flatten all three EQs for the highlighted peer, including its parametric bands. Volume and pan are kept.
+<!-- /help-entry -->
+
+<!-- help-entry:main-status -->
+Read-only current connection status
+
+Read the latest connection or action status. Changes are announced by native accessibility. The text can be selected and read with the keyboard.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-lockaddresses -->
+Keep profile peer addresses
+
+Keep peer addresses exactly as saved in this profile. Changes to remembered history do not change these selected addresses.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-entry -->
+Add a peer
+
+Enter an IPv4 address or hostname, with a colon and port if needed. During a session, choose Add peer or press Return to connect without replacing the people already selected.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-add -->
+Add and remember this peer
+
+Connect to the entered address and remember it for later, without replacing existing selections. The shared password still needs to match. Start the session first.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-cancel -->
+Cancel pending Add
+
+Cancel the pending hostname lookup. Current peer selections and existing connections are preserved.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-remembered -->
+Choose a remembered peer
+
+Choose an entry not currently selected. Return or Space connects it; Delete forgets only this remembered entry. Arrow keys move the highlight.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-connect -->
+Connect selected remembered peer
+
+Connect the selected remembered peer without replacing other current peer selections. Return or Space in the list does the same.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-forget -->
+Forget selected remembered peer
+
+Forget the selected entry from the remembered list on this Mac. Current selected addresses and active connections are preserved.
+<!-- /help-entry -->
+
+<!-- help-entry:main-connectivity-clear -->
+Clear remembered peer history
+
+Clear the remembered peer history for every profile on this Mac. Current peer selections and connections are preserved.
+<!-- /help-entry -->
+
+<!-- help-entry:main-router-checkbox -->
+Automatic router port opening
+
+Computer-wide and off by default. Request only the running RemSound audio port through compatible UPnP, NAT-PMP or PCP. Profiles do not save this choice; a mapping does not guarantee Internet reachability.
+<!-- /help-entry -->
+
+<!-- help-entry:main-router-status -->
+Router mapping status
+
+Read whether the requested router mapping is waiting, active or failed. Even an active mapping does not prove that another computer can reach you from the Internet.
+<!-- /help-entry -->
+
+<!-- help-entry:main-eq-band -->
+Equalizer band gain
+
+Adjust this band from minus 12 decibels through flat to plus 12 for the highlighted peer. Arrow keys adjust its gain; Return resets it to flat. The selected EQ mode chooses which bands are heard.
+<!-- /help-entry -->
+
+<!-- help-entry:main-tab-connectivity -->
+Connectivity
+
+Enter this profile’s name, peer address and connection password, choose peers and manage remembered addresses, router mapping and browser listening.
+<!-- /help-entry -->
+
+<!-- help-entry:main-tab-audio -->
+Audio I/O
+
+Choose your sending sources and playback outputs. Adjust codec, receive buffering, listening volume, DAW permission and push-to-talk settings.
+<!-- /help-entry -->
+
+<!-- help-entry:main-tab-profiles -->
+Recording / Profiles
+
+Choose the next recording directions, format and channel layout. Start or stop a recording, choose its folder, and open or save profiles.
+<!-- /help-entry -->
+
+<!-- help-entry:main-tab-mix -->
+Pan / EQ
+
+Choose a peer and adjust its level, stereo pan and equalizer. Bypassing shaping preserves the settings; volume and pan are independent of flattening EQ.
+<!-- /help-entry -->
+
+## Dialog control reference
+
+Help for settings windows and questions. OK or Save applies an edit; a Cancel entry explains what is left unchanged.
+
+<!-- help-entry:dialog-ptt-enable -->
+Enable push to talk
+
+Enable this profile's push to talk. Changes apply only after OK.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-path -->
+Affected audio path
+
+Choose input audio, system audio, or both. DAW sending follows push to talk unless bypassed.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-key -->
+Push-to-talk key
+
+Press a key, with or without modifiers, or Delete to clear. The key is saved for this Mac only after OK; profile gate choices are separate. Tab moves focus.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-trigger -->
+Key or sound level
+
+Use a key, or sound reaching the chosen level. Other settings are retained when changing mode.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-hold -->
+Hold to speak
+
+Send while the key is held. With Hold and Double both off, each press switches talking on or off.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-doubletap -->
+Double tap to hold
+
+A double tap locks talking on; one tap releases it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-speed -->
+Double-tap speed
+
+Slow, medium or fast double-tap timing. Available when Double tap to hold is selected.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-level -->
+Sound threshold
+
+Up raises the threshold. Return or keypad Enter resets to minus 40 decibels without closing this window.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-bypassrecording -->
+Recording bypass
+
+Record original sent audio whether talking or not. Sending to peers still follows push to talk.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-bypassplugin -->
+DAW bypass
+
+Send a DAW plugin's audio whether talking or not. Input and system audio still follow push to talk.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-ok -->
+Apply push-to-talk choices
+
+Apply these choices and close. An error keeps this window open.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-cancel -->
+Cancel push-to-talk edits
+
+Close and discard all changes. Escape and Command W also discard.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-ptt-status -->
+Push-to-talk result
+
+The last error applying these choices. Tab returns to the controls.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-enable -->
+Browser listening
+
+Apply this profile's browser listening choice while this window is open. OK keeps it; Cancel restores the opened choices after cleanup.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-password -->
+Browser password
+
+Password, shown. It is committed when you leave this field. It is separate from the audio connection password and is never saved in profile JSON.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-autostart -->
+Browser automatic start
+
+Opt into starting listening when the page loads. The page may save this password in browser local storage; this is separate from Mac credential storage.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-storagenote -->
+Browser password storage
+
+Read the effect of opting into automatic browser listening. Browser storage is separate from Mac Keychain storage.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-scopenote -->
+Browser settings and profiles
+
+Read whether these browser choices are saved with a profile or are temporary. Closing or saving these settings is separate from whether a browser is actually playing audio.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-browsers -->
+Connected browsers
+
+Read the browsers listening to this session and their available audio, buffering and connection details. The list helps diagnose a connection, but the listener still needs to confirm what they hear.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-status -->
+Browser listener result
+
+Result of applying or restoring these choices. Check the browser to confirm connection and audio playback.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-ok -->
+Keep browser settings
+
+Keep these choices and close the window when applying them has finished. If something cannot be saved or started, the window stays open so you can read the error.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-cancel -->
+Cancel browser changes
+
+Restore the settings you had when the window opened. Escape, Command-W and closing the window do the same. This does not turn off public access already enabled through Tailscale Funnel.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-turnonbutton -->
+Turn on Tailscale Funnel
+
+Run Tailscale's Funnel command for this listener. Approval pages may open in your browser. Public access can persist after closing or Cancel. Without Tailscale, opens its download page.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-copyaddressbutton -->
+Copy browser address
+
+Copy only a currently proved public address. This does not test connection or playback.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-addressvalue -->
+Browser address
+
+Read the address currently reported for this listener. Copy browser address checks it again. A displayed address does not prove that another browser can connect or play sound.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-browser-addressresult -->
+Browser address result
+
+Address query and copy result. Unknown or unavailable does not prove Tailscale is uninstalled or globally off.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-intro -->
+Named-peer management
+
+Names apply across profiles. Deleting a name leaves peer selection and connection behaviour unchanged.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-table -->
+Named peers
+
+Arrow keys choose peers. F2 renames one; Delete forgets selected names. Command A selects all.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-renamebutton -->
+Rename named peer
+
+Rename the one selected peer across profiles. Clearing its name restores the announced name. A save failure leaves the previously saved names intact.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-deletebutton -->
+Forget names
+
+Forget the selected friendly names from the saved names on this Mac. Connections and profile files remain unchanged.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-closebutton -->
+Close named peers
+
+Close this window and return to RemSound without changing selected peer connections.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-peers-status -->
+Name changes
+
+Read whether the last rename or removal was saved. A failed or outdated edit leaves the stored name unchanged.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-quick-profile-instructions -->
+Quick profile switch
+
+Choose a saved profile with Up and Down, then Return to switch. Escape closes without changing. Selecting the current profile also closes without a switch.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-quick-profile-list -->
+Saved profiles
+
+Use Up and Down to choose a saved profile. The current one is marked. Return switches after the usual unsaved-change and recording checks; choosing the current profile leaves it unchanged.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-quick-profile-closebutton -->
+Close quick switch
+
+Close the profile list without switching. Escape and Command-W also close it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-rememberedtable -->
+Remembered servers
+
+Servers you have been on. Return connects to the selected one; Delete forgets it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-address -->
+Server address
+
+Enter a server name or IPv4 address, optionally followed by a colon and port. Press Return or choose Connect to join its group.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-action -->
+Server connection action
+
+Connect starts RemSound if needed and joins the server using the current profile's password. Existing selected peers remain active. Disconnect leaves only the server. Connection errors are announced.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-close -->
+Close server window
+
+Close this window without changing the server connection.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-status -->
+Server connection result
+
+The progress or result of the server connection. You can return to this field to read an error again.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-explanation -->
+Server connection explanation
+
+Explains the profile password, session startup, peer selections and leaving a server.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-details -->
+Server details
+
+Read the information supplied by the connected server. Server details are not a measurement of your sound-card or DAW delay.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-notice-message -->
+Server notice
+
+Read the notice with arrow keys. Tab reaches Don't show this message again, then OK. Return and Escape acknowledge this notice.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-notice-suppression -->
+Remember server notice choice
+
+Off by default. Saves this computer's preference only after you acknowledge the notice.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-notice-ok -->
+Acknowledge server notice
+
+Acknowledge this notice and continue the pending server decision. A failed save keeps the notice open.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-notice-status -->
+Server notice result
+
+Read a failure saving the notice preference. The notice remains open until its decision can complete.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-version-message -->
+Server version warning
+
+Read the warning, then choose Connect anyway or Cancel. Return and Escape cancel. Visit opens GitHub and leaves this question open.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-version-connect -->
+Connect anyway
+
+Join or stay on this out-of-date server for this connection only.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-version-visit -->
+Visit server source
+
+Open the latest RemSound server code on GitHub without answering or closing this warning.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-version-cancel -->
+Cancel server connection
+
+Cancel this server connection. This is the default for Return and Escape.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-server-version-status -->
+Server source visit result
+
+Read the result of trying to open GitHub. Visiting does not answer the connection warning.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-mute -->
+Mute automatic cues
+
+Silence every automatic audio cue, error beep and DAW plugin Help sound on this Mac. Saved immediately for every profile without marking the profile unsaved. Audio cues list previews still play. The push-to-talk speed preview follows this mute. Untick to restore your choices.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-globallist -->
+Global cue events
+
+Choose a sound event shared by all profiles. Up and Down preview its current choice; Off remains silent. The controls below apply to the last selected event.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-profilelist -->
+Profile cue events
+
+Choose a sound event belonging to the current profile. Up and Down preview its current choice. Save the profile to retain these profile choices.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-choice -->
+Choose event sound
+
+Choose none, a numbered built-in sound or the custom WAV for the last event selected in either list. Its global or profile list determines saving scope.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-play -->
+Preview selected cue
+
+Preview the selected event’s current sound without changing the connection. Preview remains available when automatic cues are muted; none remains silent.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-browse -->
+Choose custom cue WAV
+
+Choose a WAV for the selected event. A missing or unreadable custom file falls back to its built-in sound. The selected list determines saving scope.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-keyboardclicks -->
+Profile typing clicks
+
+Play typing sounds in RemSound edit fields. This choice belongs to the current profile and takes effect immediately. Save Profile keeps it. Turn all audio cues off silences typing without changing this choice.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-microphonepermissionstatus -->
+Microphone permission status
+
+Read the current macOS microphone permission. Permission alone does not enable input sending.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-systemaudiopermissionstatus -->
+System audio permission status
+
+Read the current macOS system audio permission. Choose sources and enable sending separately.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-inputsendingstatus -->
+Input sending status
+
+Read whether selected input sending is enabled. This is separate from microphone consent.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-microphonepermissionbutton -->
+Microphone permission button
+
+Ask macOS for microphone access if it has not decided yet. If already allowed or denied, its existing decision is shown.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-microphonesettingsbutton -->
+Microphone settings button
+
+Open the macOS Microphone privacy setting to change a previous decision.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-systemaudiopermissionbutton -->
+System audio permission button
+
+Try system audio access again. macOS may prompt only if it has not decided yet.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-systemaudiosettingsbutton -->
+System audio settings button
+
+Open the macOS Screen and System Audio Recording privacy setting.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-enableinputsendingbutton -->
+Enable input sending button
+
+Send the inputs selected in Audio I/O to your connected peers. Microphone access alone does not turn on sending.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-refreshpermissionsbutton -->
+Refresh permissions button
+
+Read current microphone permission and input sending state without changing macOS consent.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-showhidehotkey -->
+Show hide hotkey
+
+Choose a machine-wide shortcut to show or hide RemSound. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-sendinghotkey -->
+Sending hotkey
+
+Choose a machine-wide shortcut to toggle input sending. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-receivinghotkey -->
+Receiving hotkey
+
+Choose a machine-wide shortcut to toggle receiving. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-dawhotkey -->
+DAW shortcut
+
+Choose a global shortcut to allow or block DAW plugin sending and receiving. Delete clears it. This does not change microphone or system-audio sending.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotevolumeuphotkey -->
+Remote volume up hotkey
+
+Choose a machine-wide shortcut to raise listening volume on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotevolumedownhotkey -->
+Remote volume down hotkey
+
+Choose a machine-wide shortcut to lower listening volume on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotemutehotkey -->
+Remote mute hotkey
+
+Choose a machine-wide shortcut to toggle listening mute on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotesystemuphotkey -->
+Remote system up hotkey
+
+Choose a machine-wide shortcut to raise system volume on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotesystemdownhotkey -->
+Remote system down hotkey
+
+Choose a machine-wide shortcut to lower system volume on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remotesystemmutehotkey -->
+Remote system mute hotkey
+
+Choose a machine-wide shortcut to toggle system mute on accepting peers. Press Delete to clear it. The shortcut is saved on this Mac, independently of profile audio settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-allshapinghotkey -->
+Peer shaping shortcut
+
+Choose a global shortcut to switch all-peer volume, pan and EQ processing on or off. Delete clears the shortcut; bypassing the processing keeps your saved adjustments.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-localvolumeuphotkey -->
+Volume up hotkey
+
+Press a valid global shortcut, or Delete to clear it. It raises the received-sound volume on this Mac five percent. It repeats while held.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-localvolumedownhotkey -->
+Volume down hotkey
+
+Press a valid global shortcut, or Delete to clear it. It lowers the received-sound volume on this Mac five percent. It repeats while held.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-recordinghotkey -->
+Recording hotkey
+
+Press a valid global shortcut, or Delete to clear it. It starts or stops recording, as the Record button does.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-speakstatushotkey -->
+Speak status hotkey
+
+Press a valid global shortcut, or Delete to clear it. It speaks RemSound's status from anywhere. Press it twice quickly to copy the status to the clipboard.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-metronomehotkey -->
+Metronome hotkey
+
+Press a valid global shortcut, or Delete to clear it. It starts or stops the metronome; while you follow a master it mutes or unmutes your clicks. Also listed in Metronome settings.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-metronometempouphotkey -->
+Metronome tempo up hotkey
+
+Press a valid global shortcut, or Delete to clear it. One beat a minute faster, kept in the profile. It repeats while held. Not taken while you follow a master.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-metronometempodownhotkey -->
+Metronome tempo down hotkey
+
+Press a valid global shortcut, or Delete to clear it. One beat a minute slower, kept in the profile. It repeats while held. Not taken while you follow a master.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-metronomevolumeuphotkey -->
+Metronome volume up hotkey
+
+Press a valid global shortcut, or Delete to clear it. Your clicks five percent louder, kept in the profile. It repeats while held.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-metronomevolumedownhotkey -->
+Metronome volume down hotkey
+
+Press a valid global shortcut, or Delete to clear it. Your clicks five percent quieter, kept in the profile. It repeats while held.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-hearmyselfhotkey -->
+Hear myself hotkey
+
+Press a valid global shortcut, or Delete to clear it. It unmutes or mutes your own sound coming back from the server, to test the round trip.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-mutereceivedhotkey -->
+Mute received audio hotkey
+
+Press a valid global shortcut, or Delete to clear it. It mutes or unmutes received audio on this Mac, as the Mute received audio box does.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-keys -->
+Metronome shortcut keys
+
+The metronome's five keys, the same ones as in Preferences. Press a key in a field to set it, or Delete to clear it. OK keeps them.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-quickprofilehotkey -->
+Quick Profile Switch shortcut
+
+Choose a global shortcut to open the saved-profile list. Use arrows and Return to switch, or Escape to cancel. Close another RemSound dialog first. Delete clears the shortcut.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-pushtotalkhotkey -->
+Push to talk hotkey
+
+Press a key, with or without modifiers, or Delete to clear. This key is saved on this Mac, independently of profiles. Configure push to talk in Audio I/O, Push to talk settings. Tab moves focus. Key input pauses while choosing any shortcut.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-pushtotalkkeystatus -->
+Push to talk key status
+
+Read push-to-talk key registration status on this Mac. This field does not send or record audio.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-enablelogs -->
+Enable logs
+
+Turn diagnostic logging on or off for this setup. Save Profile keeps the choice. Changes to a read-only profile are temporary unless you explicitly save them. A new profile starts with logging off.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-loginatstartup -->
+Login at startup
+
+Launch RemSound at Mac login. macOS may ask you to approve it in Login Items.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-checkupdates -->
+Check updates
+
+Check Andre Louis's Mac releases after RemSound opens.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-updatefrequency -->
+Check for updates in the background
+
+Never, every hour, every 6 hours or every 24 hours (the default), while RemSound is open. Check for updates automatically is the check when RemSound opens.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-updatewindow -->
+Only install automatic updates between these times
+
+Off by default. On, an update found automatically outside these times waits until they start, so it never cuts your sound while you use the Mac. A check you ask for is never held back.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-updatewindowstart -->
+Install automatic updates from
+
+The start of the time range, in fifteen-minute steps. 01:00 by default.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-updatewindowend -->
+Install automatic updates until
+
+The end of the time range, in fifteen-minute steps. 06:00 by default. The range may pass midnight; the same start and end mean any time.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-showwhatsnew -->
+Show what's new after an update
+
+On by default. The first time RemSound opens after an update, it shows what's new in that version.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-theme -->
+Colour theme
+
+Follow the Mac's light or dark appearance (the default), or always light, or always dark. It changes at once.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-taborder -->
+Tab order
+
+The main window's tabs, first to last. Choose one and use Move tab up or Move tab down. The window changes at once.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-showpaneqtab -->
+Show the Pan / EQ tab
+
+On by default. Off hides the Pan / EQ tab; each profile's volume, pan and EQ still apply.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-showrememberedpeers -->
+Show the remembered peers list
+
+On by default. Off hides the remembered peers list and its buttons on the Connectivity tab.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-rememberwindow -->
+Remember the main window's size and position
+
+Off by default. On, the main window opens as big as, and where, it was when RemSound last closed.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-startminimised -->
+Start hidden in the menu bar
+
+Off by default. On, RemSound opens with its window hidden; the menu bar item shows it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-startwithprofile -->
+Start with a specific profile
+
+Off by default, when RemSound opens the profile you used last. On, it opens the profile chosen in Profile to start with.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-helpmessage -->
+Show the F1 help message at startup
+
+On by default. When RemSound opens, it says that F1 gives help on the control you're on and Shift-F1 opens the manual. The message has a Do not show this message again box.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-profilesfolder -->
+Profiles folder
+
+Choose another place to keep profiles, or return to the default folder. The change takes effect next time RemSound opens. Moving profile files does not move saved Keychain passwords.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-clearservers -->
+Clear remembered servers list
+
+Forgets every server in the Server window's remembered list, after asking.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-clearapplications -->
+Clear remembered applications list
+
+Forgets every application RemSound has remembered for sending system audio, after asking.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-writelogsnow -->
+Write logs now
+
+Writes a mark into the log now, so the moment can be found when the log is read.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-warnlogs -->
+Warn if the logs folder is large
+
+Off by default. On, RemSound warns when it opens if the logs folder has grown past the size chosen (100 megabytes unless changed).
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-prunelogs -->
+Delete logs older than
+
+Off by default. On, RemSound deletes logs older than the days chosen (14 unless changed) when it opens. Logs it is writing are kept.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-deletealllogs -->
+Delete all logs
+
+Deletes every log except those RemSound is writing now, after asking. This cannot be undone.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-installupdates -->
+Install updates
+
+Allow automatic installation of a newer signed Mac package. Your settings and profiles are kept. Save and close DAW projects before an update so the host can load the new plugins afterward.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-acceptconnections -->
+Accept connections from other peers
+
+Choose Ask me each time, Automatically or Manual for people using your password who select you first. Ask offers to select them back; Automatically does so without asking; Manual leaves it to you. Someone you deliberately deselect is not immediately added back. This choice applies across profiles on this Mac.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-acceptremotevolume -->
+Accept remote volume
+
+Off by default. When on, a ticked peer who knows the shared password can change this Mac's master volume for received audio, mute received audio, and change or mute the Mac's own output volume. Saved in the current profile.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-remember -->
+Remember
+
+Uncheck to remove the saved password from Mac Keychain immediately.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-reconnect -->
+Reconnect
+
+Start automatically when RemSound opens. Requires a saved password and restores your saved sending and receiving choices.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-autosaveinterval -->
+Auto save interval
+
+Never, or every 2, 5, 10, 15, 20, or 30 minutes. Only changed, saved, writable profiles are saved automatically.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-tab-general -->
+General preferences
+
+Choose startup, appearance, section order, updates, logging and shortcuts. Individual controls explain whether a choice applies to this Mac or is saved with the profile.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-tab-cues -->
+Audio cue preferences
+
+Choose global and profile sound events, preview or browse a sound and set profile typing clicks. Automatic cue mute is separate from previews.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-preferences-tab-permissions -->
+macOS audio permissions
+
+Review microphone and system audio consent. Asking for consent does not select or enable an input; input sending is a separate explicit action.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-peer-name-input -->
+Peer name
+
+Choose a friendly name of up to 80 characters across profiles. Clear it to restore the peer’s announced name. Profile files are not rewritten.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-peer-name-notice -->
+Rename peer
+
+Name a selected peer across profiles. This changes its friendly label, not authentication, selection or connection state.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-peer-name-accept -->
+Save peer name
+
+Save this friendly name across profiles, or forget it when the field is empty. A failed save leaves the previously saved names intact.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-peer-name-clear -->
+Clear Custom Name
+
+Forget the name you gave this peer, so it goes back to the name it announces. It applies across profiles.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-peer-name-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-profile-name-input -->
+Profile name
+
+Enter a name for this saved setup. It identifies the profile in menus and the profile list; it is separate from the name announced to other people.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-profile-name-notice -->
+Profile name
+
+Choose a profile name. Confirm only when ready to perform the indicated profile operation; Cancel preserves the current profile.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-profile-name-accept -->
+Use this profile name
+
+Use the entered name for this save or rename. If the name is not valid or cannot be saved, RemSound reports the problem so you can correct it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-profile-name-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-read-only-save-donotask -->
+Read-only save warning preference
+
+When checked, future explicit saves onto read-only profiles overwrite without this warning. This is a computer preference, separate from the profile lock.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-read-only-save-notice -->
+Save a read-only profile
+
+An explicit save will overwrite the named read-only profile while retaining its lock. Save Profile As instead makes a separate copy.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-read-only-save-accept -->
+Save anyway
+
+Explicitly overwrite the current read-only profile and keep it read only. This is different from automatic saving.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-read-only-save-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-open-profile-picker -->
+Choose a profile
+
+Choose the saved setup to open. Read-only profiles are marked. RemSound checks unsaved changes and an active session before replacing your current setup.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-open-profile-notice -->
+Open profile
+
+Choose one saved profile to open. Cancel leaves the current profile and its edits intact.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-open-profile-accept -->
+Open selected profile
+
+Open the highlighted setup after any unsaved-change and active-session questions have been answered. Cancel those questions to keep the current setup.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-open-profile-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-rename-input -->
+Friendly peer name
+
+Enter a name for this known peer across profiles. Clear the field to forget only the friendly name.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-rename-notice -->
+Rename a known peer
+
+Give this person a friendly name across profiles. Clear the field to restore their announced name. This does not change their address or connection.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-rename-accept -->
+Save this peer name
+
+Keep the entered name across profiles. If it cannot be saved, or the peer changed while you were editing, the previous stored name is kept.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-named-rename-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-listen -->
+Listen to the metronome
+
+Starts or stops the metronome with the settings in this window; while you follow a master it mutes or unmutes your clicks instead. Every change in the window is heard at once.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-tempo -->
+Tempo, beats per minute
+
+From 30 to 300. While you follow a master metronome, the tempo is theirs and cannot be changed here.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-signature -->
+Time signature
+
+2/4, 3/4, 4/4, 5/4, 6/8, 7/8, 9/8 or 12/8. The first beat of each bar is accented. While you follow a master, the signature is theirs.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-sound -->
+Click sound
+
+Click, Woodblock, Beep, Rim or Cowbell, then your own. Moving through the list plays the sound. To add your own, put "Name accent.wav" and "Name beat.wav", or one "Name.wav", in the Metronome sounds folder beside your profiles; one with a shipped name replaces it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-volume -->
+Volume
+
+The click from zero to one hundred percent. Return resets it to seventy.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-hear -->
+Hear the click
+
+In RemSound plays it in your outputs. In the DAW adds Metronome to the RemSound plugin's peer list: choose it on a track to get the clicks there.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-record -->
+Include the click in RemSound's recordings
+
+Off by default. Only when the click is heard in RemSound; a DAW records its own tracks. A split recording gets a Metronome track of its own.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-whenasked -->
+When someone asks to be the master metronome
+
+Ask me, or accept automatically.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-ok -->
+OK
+
+Keeps these settings in the profile and closes the window.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-metronome-cancel -->
+Cancel
+
+Puts the profile's settings back and closes the window. A metronome this window started is stopped. Escape does the same.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-solo-metronome-notice -->
+Solo metronome notice
+
+Without a server, the metronome clicks locally for you alone. Other people will not hear this local solo click.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-solo-metronome-accept -->
+Acknowledge solo metronome
+
+Acknowledge that this metronome is local while no server is connected.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-solo-metronome-suppression -->
+Suppress this notice
+
+Remember on this Mac not to show this solo-metronome notice again after it is acknowledged.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-self-monitor-notice -->
+Server self-monitoring warning
+
+Server self-monitoring returns your own sent sound. Use headphones and avoid capturing RemSound playback to prevent feedback.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-self-monitor-accept -->
+Allow server self-monitoring
+
+Continue the pending request to hear your own sent audio after its server round trip.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-self-monitor-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-self-monitor-suppression -->
+Suppress this notice
+
+Remember on this Mac not to show this feedback warning again after accepting it.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-prompt-start -->
+Start frequency
+
+Enter the lower edge of the band, from 20 to 20,000 Hz. It must be below the end frequency.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-prompt-end -->
+End frequency
+
+Enter the upper edge of the band, above the start frequency and no higher than 20,000 Hz.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-prompt-gain -->
+Band gain
+
+Enter a boost or cut from minus 12 to plus 12 dB. Decimal values such as 1.5 are allowed. Valid changes preview while you edit.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-notice -->
+Add equalizer band
+
+Add a parametric boost or cut over a frequency range. It previews while editing; Cancel discards the proposed band.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-accept -->
+Add EQ band
+
+Accept a valid frequency range and gain. Invalid values keep the question open for correction.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-eq-band-cancel -->
+Cancel
+
+Close without saving the proposed change. Your current saved settings stay as they were.
+<!-- /help-entry -->
+
+<!-- help-entry:dialog-cues-scope -->
+Where this sound is saved
+
+Read whether the chosen event is global for this Mac or belongs to the current profile. Global changes save immediately; use Save Profile to keep profile sound choices.
+<!-- /help-entry -->
+
+## Menu-bar control reference
+
+These commands are available from the RemSound menu-bar item while its windows are hidden.
+
+<!-- help-entry:tray-show -->
+Show RemSound Window
+
+Show the existing RemSound main window. This leaves the current connection and profile in place.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-preferences -->
+Preferences
+
+Open RemSound Preferences to change startup, keyboard, cue and logging choices. Opening Preferences does not start a connection.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-recent-profiles -->
+Recent Profiles
+
+Open the submenu of recently used saved profiles. Choosing a profile uses the normal unsaved-change and connection safeguards.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-no-recent-profiles -->
+No recent profiles
+
+There are no saved recent profiles to choose here. Open or save a profile from the main window to use it later.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-open-recent-profile -->
+Open a recent profile
+
+Open this saved recent profile using the normal profile switch. Unsaved changes and an active connection are checked before switching.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-status -->
+Connection status
+
+Read the current RemSound connection summary. This status item reports state and does not start or stop audio.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-start -->
+Start
+
+Start a session with the current profile and selected audio choices. Only sources whose sending switches are on will be sent.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-stop -->
+Stop
+
+Disconnect and stop this audio session. Saved profiles remain available when you start again.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-send -->
+Send audio
+
+Toggle sending from the selected microphone or input sources. This does not change whether incoming peer audio is received.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-system -->
+Send system audio
+
+Toggle sending from the selected system audio source. The selected system capture mode and source choices still apply.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-receive -->
+Receive audio
+
+Toggle receiving peer audio for this connection. Local monitoring and output selections remain separate controls.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-monitor -->
+Monitor in app
+
+Toggle local playback of received peer audio in RemSound. The existing output selections still apply.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-record -->
+Recording
+
+Start or stop recording with the current folder, source and format choices. Recording is available while a session is running.
+<!-- /help-entry -->
+
+<!-- help-entry:tray-quit -->
+Quit RemSound
+
+Quit RemSound through its normal shutdown path. Connection cleanup and unsaved recording or profile safeguards still apply.
+<!-- /help-entry -->
+
+## Plugin control reference
+
+These entries are also available from the plugin's Context help button and F1.
+
+<!-- help-entry:plugin-active -->
+Active
+
+Enables or bypasses this plugin's sending and receiving on the track. The original track audio still passes through.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-send -->
+Send this track to my peers
+
+Sends audio from this DAW track. The app microphone switch is separate.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-receive -->
+Receive peers onto this track
+
+Adds peer audio to this track. Mac output is a separate switch in the RemSound app.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-all -->
+Receive all peers including new arrivals
+
+When on, receive every available peer, including new arrivals. When off, receive only the selected peers, those ticked in Peers to receive.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-peers -->
+Peers to receive
+
+The peers the RemSound app lists, each ticked or not. Space or Return ticks or unticks the highlighted peer, and this track receives every ticked peer while Receive all peers is off. With In the DAW chosen in Metronome settings, Metronome is one of them. The project remembers the ticks.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-sendlevel -->
+Send level
+
+Sets the level sent from this track to peers. Minus 60 decibels is silence.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-receivelevel -->
+Receive level
+
+Sets the level of peer audio added to this track. Minus 60 decibels is silence.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-peer -->
+Peer cursor
+
+Choose one person at a time through the host's automation or parameter controls. Moving this value makes that person the only selected entry in Peers to receive.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-status -->
+App connection and track status
+
+Read whether the companion app is available and whether this track is sending or receiving. A track must be processed by the DAW for its sending to produce audio.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-help -->
+Context help
+
+Read help for every plugin control. F1 opens help for the focused control; Shift-F1 opens the full Mac manual. Escape closes help and returns to the control.
+<!-- /help-entry -->
+
+<!-- help-entry:plugin-window -->
+RemSound plugin
+
+Use Tab and Shift-Tab to move between controls. F1 opens focused-control help; Shift-F1 opens the Mac manual. Escape closes help. The Context help button reads each control's manual entry when a host reserves F1.
+<!-- /help-entry -->

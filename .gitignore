@@ -1,0 +1,38 @@
+.DS_Store
+.build/
+build/
+dist/
+*.zip
+# Only synthetic updater regression archives belong in source.
+!/App/Tests/RemSoundCoreTests/Fixtures/Updates/*.zip
+*.log
+__pycache__/
+.private/
+/Program Builds/
+/Private Diagnostics/
+/Recordings/
+HANDOVER.md
+/CLAUDE-HANDOVER-*.md
+/afternoon testing.md
+/round trip test.md
+AGENTS.md
+PackageRelease.sh
+Reference/RemSound-6.0/BUILDING-FOR-MAC.md
+Reference/RemSound-6.0/src/RemSound.App/SelfTest.*
+Reference/RemSound-6.0/src/RemSound.App/SelfTest.cs
+# Private engineering handovers are kept locally, outside public source releases.
+/docs/Jamming-at-speed.md
+/docs/Keeping-in-time.md
+/docs/Moving-the-receive-buffer.md
+/docs/Parity.md
+/docs/Peer-EQ.md
+/docs/Playing-through-a-server.md
+/docs/Recording-to-MP3.md
+/docs/Recording-to-Ogg-Opus.md
+/docs/Remote-volume-and-mute.md
+/docs/Saving-the-network.md
+/docs/Sending-chosen-applications.md
+/docs/Source-and-tests.md
+/.build-work/
+/.build-output/
+/.codex-*

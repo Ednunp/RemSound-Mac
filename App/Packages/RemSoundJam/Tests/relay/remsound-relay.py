@@ -1,0 +1,1558 @@
+#!/usr/bin/env python3
+"""
+RemSound UDP relay, dual-protocol.
+
+Listens on a single UDP port and handles two protocol versions concurrently:
+
+- v1 ("pairwise"): 12-byte header, two-slot reflector. First two distinct
+  UDP endpoints to send a valid RemSound v1 packet claim the slots; subsequent
+  v1 packets from one slot's endpoint are reflected to the other. Slots idle
+  for IDLE_TIMEOUT_SECONDS are eligible for replacement. This is the original
+  remsound-relay.py behaviour, preserved here unchanged so legacy clients keep
+  working against the new server.
+
+- v2 ("groups"): 28-byte header with embedded CLIENT_ID (UUID). Up to
+  REMSOUND_MAX_CLIENTS instances (default 64) share the relay. A client joins
+  with a LobbyHello - nothing else lets a new client in - carrying its display
+  name, an 8-byte group tag (its password fingerprint, which its Format packets
+  already carry in the clear) and the people it has ticked. A packet is
+  forwarded unmodified to another client in the SAME group only when each has
+  ticked the other (a client that sends no tick list has ticked everyone), so
+  two groups on different passwords never see each other. Identity is the
+  CLIENT_ID, not the network endpoint. Periodic LobbyRoster packets tell each
+  client who is in its group and who has ticked it.
+
+The two protocols meet in one place. A v1-only device (a phone, an older app)
+pairs through the two v1 slots exactly as before. A v2 client also sends v1
+heartbeats from the same socket, and may take a v1 slot, but only to partner a
+v1-only device, so that device can still reach one member of the group. Two
+group members never pair over v1 (they already reach each other in their
+group), and a pair that turns out to be two members is dissolved.
+
+A v1 packet from an endpoint the pair has no room for gets an address-check
+cookie back, rate-limited, so a newer client learns it is talking to a relay
+and can join its group.
+
+A v2 client is sent nothing but its address-check cookie - no member list, no
+sound, and it is in nobody's list - until it echoes that cookie back
+(--v2-watch-only turns this off). Once it has, its place can move to a new
+address only when the new one has echoed a cookie of its own and the old one
+has fallen silent (pre-release sweep 2026-09-25).
+
+Operator guide: server/README.md. The original design (historical, not current):
+server/remsound server update.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import logging.handlers
+import os
+import select
+import signal
+import socket
+import struct
+import sys
+import time
+import uuid
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field
+from typing import Optional
+
+LISTEN_HOST = "0.0.0.0"
+DEFAULT_PORT = 47830
+RECV_BUFFER_BYTES = 2048
+IDLE_TIMEOUT_SECONDS = 60
+STATS_INTERVAL_SECONDS = 60
+ROSTER_HEARTBEAT_SECONDS = 1.0  # v2 only — periodic roster broadcast
+# A change to the group (a join, a new name, a new tick list) sends the member list out again at once rather than on the
+# next heartbeat - but no sooner than this after the last one went out. It used to go out on EVERY packet that changed
+# something, and one 68-byte hello with a new name made the relay send a list to every member at once: 155 KB for 56
+# members, about 2300 times what it was sent (pre-release sweep 2026-09-25). A burst of changes inside this window goes
+# out as one list when the window allows, so at most four a second on top of the heartbeat.
+ROSTER_DIRTY_MIN_INTERVAL_SECONDS = 0.25
+# A member who has proved its address keeps it until a packet bearing its client id comes from a new address that ALSO
+# proves itself, AND the old address has been silent this long. A genuine move (a router rebinding, Wi-Fi to cable)
+# silences the old address; somebody else sending with that member's id - which every member of the group knows, it is
+# in the list - does not (pre-release sweep 2026-09-25). A member sends a hello every 2 s and wrapped heartbeats besides,
+# so this is more than two missed hellos in a row.
+REBIND_SILENCE_SECONDS = 5.0
+SOCKET_POLL_TIMEOUT_SECONDS = 1.0
+DEFAULT_LOG_PATH = "/var/log/remsound-relay/remsound-relay.log"  # systemd's LogsDirectory for the relay's own user
+LOG_KEEP_DAYS = 14  # a new log file each midnight; this many old ones are kept and older ones deleted
+# Nearly every line the relay writes is set off by a packet, and a packet can come from anybody, from any address they
+# care to put on it. With no limit one sender could have it write a line for every packet - a new name in every hello,
+# say - and fill the Pi's memory card in a day (review 2026-09-25). So, each minute: at most this many lines of one kind
+# from one address, and this many of one kind from everybody together. The rest are counted, and the count is written
+# once a minute beside the figures.
+LOG_REPEATS_PER_ADDRESS = 10  # a household behind one address can show up to MAX_ENTRIES_PER_IP (8) devices
+LOG_LINES_PER_KIND = 100      # more than a full relay's worth (DEFAULT_MAX_CLIENTS) of joins after a restart
+# And a day's file stops growing at this size, whatever gets past the limits above: then only the once-a-minute figures
+# are written until midnight. A full relay writes roughly 7 MB a day; Ed's wrote 0.6 to 2.5 MB a day in September 2026.
+# With LOG_KEEP_DAYS old files kept, the log can never take more than about 300 MB of the card.
+LOG_MAX_BYTES_PER_DAY = 20 * 1024 * 1024
+DEFAULT_MAX_CLIENTS = 64
+LOBBY_NAME_BYTES = 32  # bytes reserved for a display name on the wire
+# v2 LobbyHello: the group tag follows the name. It is the client's 8-byte password fingerprint, the same
+# bytes a Format packet carries at payload offset 36, so it tells the relay nothing a Format did not.
+GROUP_TAG_BYTES = 8
+# After the group tag a hello MAY carry the list of people this client has ticked: one count byte, then that
+# many 16-byte client ids. No count byte at all means "everyone in my group", which is what a client that
+# knows nothing about ticking sends — so an older client, a phone or the pre-2026-09-20 build is unaffected.
+# A count of zero means "nobody yet". Audio passes between two clients only when each has ticked the other.
+MAX_TICKED_IDS = 64
+FORMAT_FINGERPRINT_OFFSET = 36
+# Roster flags byte (after the member list): bit 0 = the recipient holds a v1 slot with a partner.
+ROSTER_FLAG_V1_PAIRED = 0x01
+# Each roster entry ends with its own flags byte: bit 0 = this member has ticked the recipient. It is what
+# lets an app say "waiting for them to tick you" instead of going quiet with no explanation, which is the
+# one thing a person cannot work out for themselves.
+ROSTER_MEMBER_FLAG_TICKS_YOU = 0x01
+# The relay hint (an address-check cookie to a v1 endpoint the pair has no room for): at most one per
+# address this often, and a bounded table, so forged sources cannot make the relay an amplifier.
+RELAY_HINT_INTERVAL_SECONDS = 5.0
+RELAY_HINT_MAX_PENDING = 1024
+
+# Wire format constants.
+MAGIC = b"RMND"
+V1_VERSION = 1
+V2_VERSION = 2
+V1_HEADER_LEN = 12
+V2_HEADER_LEN = 28
+V2_CLIENT_ID_OFFSET = 12
+V2_CLIENT_ID_LEN = 16
+
+# Packet types (v1 + v2 shared range; v2-only types are 6+).
+TYPE_FORMAT = 1
+TYPE_AUDIO = 2
+TYPE_KEEPALIVE = 3
+TYPE_HEARTBEAT = 4
+TYPE_CONTROL = 5
+TYPE_LOBBY_HELLO = 6
+TYPE_LOBBY_ROSTER = 7
+TYPE_LOBBY_FULL = 8
+TYPE_LOBBY_BYE = 9
+# Address-proof challenge (2026-07-27): a random cookie sent to every newly seen client address;
+# the client echoes the packet back verbatim, proving the address actually RECEIVES — a forged
+# (spoofed) source address can never echo. This is what stops the reflection attack (register a
+# victim's spoofed address, then have the relay bounce audio at them). 5.6+ clients echo it;
+# older clients drop it as an unknown type, so enforcement (--require-addr-check) stays OFF
+# until the fleet has updated — watch-only mode logs who WOULD have been blocked meanwhile.
+TYPE_ADDR_CHECK = 10
+ADDR_CHECK_COOKIE_LEN = 16
+ADDR_CHECK_RESEND_SECONDS = 2.0
+# The master metronome (2026-09-28, server-v2.14): offers, answers, the shared timeline and clock readings between
+# RemSounds - timing only, sealed with the group's password like everything else, a few small packets a second. Passed
+# between group members exactly as sound is (both must have ticked each other); a v1 pair passes it as it passes everything.
+TYPE_METRONOME = 12
+V2_FORWARDABLE_TYPES = {
+    TYPE_FORMAT, TYPE_AUDIO, TYPE_KEEPALIVE, TYPE_HEARTBEAT, TYPE_CONTROL, TYPE_METRONOME,
+}
+# The server's metronome (2026-09-29, Ed: "make the server give the metronome time by working out the latency of each
+# client ... the slowest person gets the beat early ... to make sure they stay in time"). The relay keeps the beat for each
+# group and gives each member the beat early by exactly how long that member's sound takes to reach the relay, so everyone's
+# playing arrives here on the beat and every listener hears the band together. Read by the relay itself, never forwarded,
+# and not sealed (the relay does not know the password): a member's reports and the master's commands in, each member's
+# own beat grid out. Only members that have sent a report (a RemSound that knows this type) are ever sent a grid.
+# See PLAN-metronome-server-2026-09-29.md.
+TYPE_TIMING = 13
+TIMING_REPORT = 1      # member -> relay: [count u8] then count x (stream u16, sequence u32, captured_us i64, member's clock)
+TIMING_CLAIM = 2       # member -> relay: take the group's metronome (granted when nobody has it)
+TIMING_RELEASE = 3     # master -> relay: let it go; the metronome stops
+TIMING_SET = 4         # master -> relay: [running u8][milli-bpm u32][beats per bar u8][beat unit u8]
+TIMING_GRID = 20       # relay -> member: see Relay._timing_grid_packet
+TIMING_MAX_ENTRIES = 16
+TIMING_ARRIVALS_KEPT = 1024          # per stream: a few seconds of packets at the shortest frames
+TIMING_DELAY_WINDOW_SECONDS = 5.0    # the least-delayed packet of the last five seconds
+TIMING_GRID_EVERY_SECONDS = 1.0
+TIMING_START_LEAD_SECONDS = 0.4      # the first beat, as the app's own metronome starts
+TIMING_MIN_MILLI_BPM = 30_000
+TIMING_MAX_MILLI_BPM = 300_000
+TIMING_LOG_EVERY_SECONDS = 30.0      # event=metronome_timing, per member, while its group's metronome plays
+AUDIO_GAP_LONG_MS = 20.0             # event=audio_timing counts waits between one client's packets longer than this
+# Cap on how many lobby/pair entries one source IP may hold at once. A relay is a place people meet now,
+# not a single pair, so one household or one office behind a single address can legitimately show several
+# machines and a phone or two (distinct ports, same IP). An occupation attacker shows dozens. Overridable
+# with --max-per-ip / REMSOUND_MAX_PER_IP.
+MAX_ENTRIES_PER_IP = 8
+
+# A zero UUID identifies the server in outbound v2 packets that we originate
+# (LobbyRoster, LobbyFull, LobbyBye-from-server). Clients can recognise this
+# as "from server" rather than from another peer.
+SERVER_CLIENT_ID_BYTES = b"\x00" * V2_CLIENT_ID_LEN
+
+
+@dataclass
+class PeerSlot:
+    """v1 protocol — one of (up to) two peer endpoints in a pair."""
+    addr: tuple[str, int]
+    last_seen: float
+    rx_packets: int = 0
+    tx_packets: int = 0
+    # Address-proof state (see TYPE_ADDR_CHECK).
+    verified: bool = False
+    cookie: bytes = b""
+    cookie_sent: float = 0.0
+    would_block_logged: bool = False
+    # The password fingerprint from this device's Format packets, once it has sent one (a listen-only
+    # device never does). Used only to keep a group member from pairing with a device on another password.
+    fingerprint: bytes = b""
+
+
+@dataclass
+class PendingMove:
+    """v2 protocol — a new address that has sent packets bearing a PROVED member's client id (pre-release sweep
+    2026-09-25). It is held beside the member, not in its place, with an address check of its own, until it has answered
+    that check and the member's own address has been silent for REBIND_SILENCE_SECONDS (see Relay._v2_move_if_ready).
+    The fields the address check uses have the same names as a client's, so _send_addr_check and _try_verify serve both."""
+    addr: tuple[str, int]
+    since: float
+    verified: bool = False
+    cookie: bytes = b""
+    cookie_sent: float = 0.0
+    refused_logged: bool = False
+
+
+@dataclass
+class ClientEntry:
+    """v2 protocol — one client in the lobby, keyed by CLIENT_ID."""
+    addr: tuple[str, int]
+    display_name: str
+    # Refreshed ONLY by packets from addr itself. A packet with this client id from anywhere else must not keep the
+    # entry alive, or somebody sending with a member's id could make that member's own address look as if it were
+    # still in use when it had gone quiet (see PendingMove).
+    last_seen: float
+    rx_packets: int = 0
+    tx_packets: int = 0
+    # Address-proof state (see TYPE_ADDR_CHECK).
+    verified: bool = False
+    cookie: bytes = b""
+    cookie_sent: float = 0.0
+    would_block_logged: bool = False
+    # Logged once that nothing is being sent to this unproven client (see Relay._v2_note_withheld).
+    withheld_logged: bool = False
+    # A new address claiming this client's id while it is proved, waiting to take over (see PendingMove).
+    move: Optional[PendingMove] = None
+    # The group tag from this client's LobbyHello (empty until one arrives, or from a pre-groups hello).
+    group: bytes = b""
+    # The client ids this client has ticked, or None for "everyone in my group" (no list sent).
+    ticked: Optional[set[bytes]] = None
+    # The server's metronome (TYPE_TIMING): set once this client has sent a report. When each of its audio packets arrived
+    # (stream -> sequence -> relay microseconds), and the delay samples its reports gave (relay microseconds, delay).
+    timing_known: bool = False
+    timing_arrivals: dict = field(default_factory=dict)
+    timing_samples: deque = field(default_factory=deque)
+    # For event=metronome_timing: when this member's timing was last logged, and its least delay then.
+    timing_logged_at: float = 0.0
+    timing_logged_delay_us: Optional[int] = None
+    # For event=audio_timing (2026-09-29): this minute's sound from this client - how many packets, the longest wait
+    # between two, and how many waits were longer than AUDIO_GAP_LONG_MS. The evidence for "crunchy" without a capture.
+    audio_last_arrival: float = 0.0
+    audio_count: int = 0
+    audio_max_gap: float = 0.0
+    audio_long_gaps: int = 0
+
+
+@dataclass
+class GroupBeat:
+    """The server's metronome for one group: who leads it, and the beat on the relay's clock. Beat n falls at
+    anchor_us + (n - anchor_beat) x the beat's length; a bar starts at anchor_beat and every beats_per_bar after."""
+    master: Optional[uuid.UUID] = None
+    running: bool = False
+    milli_bpm: int = 120_000
+    beats_per_bar: int = 4
+    beat_unit: int = 4
+    version: int = 0
+    anchor_beat: int = 0
+    anchor_us: int = 0
+    last_grid: float = 0.0
+
+
+@dataclass
+class RelayStats:
+    forwarded: int = 0
+    dropped_unpaired: int = 0          # v1: third endpoint while pair active
+    dropped_lobby_full: int = 0        # v2: 11th client when at cap
+    rejected_bad_header: int = 0
+    pair_changes: int = 0              # v1 slot joins/leaves/replacements
+    lobby_changes: int = 0             # v2 joins/leaves/expiries
+    addr_checks_verified: int = 0      # cookies echoed back correctly
+    blocked_unverified: int = 0        # forwards withheld (enforce mode, or a v2 client while v2 is enforced)
+    would_block_unverified: int = 0    # forwards that WOULD be withheld (watch-only)
+    rejected_ip_cap: int = 0           # admissions refused by MAX_ENTRIES_PER_IP
+    rosters_withheld_unverified: int = 0  # member lists not sent to a v2 client that has not proved its address
+    # The DEVICES behind those two, not the packets: one quiet unverified phone sends hundreds of packets a minute,
+    # and the decision these figures exist for - can enforcement be switched on? - is about how many devices it
+    # would cut off.
+    would_block_devices: set = field(default_factory=set)
+    blocked_devices: set = field(default_factory=set)
+
+
+class DailyLog(logging.handlers.TimedRotatingFileHandler):
+    """A fresh file every midnight, the last LOG_KEEP_DAYS of them kept, and no day's file past max_bytes.
+
+    It used to be one file that grew for ever: 2.1 MB in four days on Ed's Pi, about 190 MB a year, and nothing installed
+    to trim it. The relay does it itself, so an update is all it takes and there is nothing else to set up (Ed,
+    2026-09-23: two weeks). Once a day's file is full, only lines marked keep=True - the once-a-minute figures - are
+    still written, so the relay can still be seen working; the rest are counted, and the count opens the next file."""
+
+    def __init__(self, path: str, max_bytes: int = LOG_MAX_BYTES_PER_DAY):
+        super().__init__(path, when="midnight", backupCount=LOG_KEEP_DAYS, encoding="utf-8")
+        self.max_bytes = max_bytes
+        self.held_back = 0
+
+    def _full(self) -> bool:
+        try:
+            return self.stream is not None and os.fstat(self.stream.fileno()).st_size >= self.max_bytes
+        except (OSError, ValueError):
+            return False
+
+    def _note(self, record: logging.LogRecord, message: str) -> None:
+        logging.FileHandler.emit(self, logging.LogRecord(
+            record.name, logging.WARNING, __file__, 0, message, None, None))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if self.shouldRollover(record):
+                self.doRollover()
+                if self.held_back:
+                    self._note(record, f"event=log_was_full lines_not_written={self.held_back} "
+                                       f"(the last file reached its {self.max_bytes // (1024 * 1024)} MB limit)")
+                    self.held_back = 0
+            if not getattr(record, "keep", False) and self._full():
+                if self.held_back == 0:
+                    self._note(record, f"event=log_full limit_mb={self.max_bytes // (1024 * 1024)} "
+                                       "(only the once-a-minute figures are written until midnight)")
+                self.held_back += 1
+                return
+            logging.FileHandler.emit(self, record)
+        except Exception:
+            self.handleError(record)
+
+
+def setup_logger(log_path: str, max_bytes: int = LOG_MAX_BYTES_PER_DAY) -> logging.Logger:
+    logger = logging.getLogger("remsound-relay")
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter(
+        fmt="%(asctime)s level=%(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    have_file = False
+    try:
+        fh = DailyLog(log_path, max_bytes)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+        have_file = True
+    except OSError as e:
+        sys.stderr.write(f"remsound-relay: could not open {log_path}: {e}\n")
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    # Under systemd (which sets JOURNAL_STREAM) the journal kept a second copy of every line, with none of the limits
+    # above. It gets only errors now, which is what "systemctl status" should show. Run by hand, or with no file, every
+    # line still comes to the screen.
+    if have_file and os.environ.get("JOURNAL_STREAM"):
+        sh.setLevel(logging.ERROR)
+    logger.addHandler(sh)
+    return logger
+
+
+def parse_header_v1(data: bytes) -> Optional[tuple[int, int, int]]:
+    """Validate a v1 header. Returns (type, stream_id, sequence) or None."""
+    if len(data) < V1_HEADER_LEN:
+        return None
+    pkt_type = data[5]
+    stream_id = struct.unpack_from("<H", data, 6)[0]
+    sequence = struct.unpack_from("<I", data, 8)[0]
+    return pkt_type, stream_id, sequence
+
+
+def parse_header_v2(data: bytes) -> Optional[tuple[int, int, int, bytes]]:
+    """Validate a v2 header. Returns (type, stream_id, sequence, client_id_bytes) or None."""
+    if len(data) < V2_HEADER_LEN:
+        return None
+    pkt_type = data[5]
+    stream_id = struct.unpack_from("<H", data, 6)[0]
+    sequence = struct.unpack_from("<I", data, 8)[0]
+    client_id_bytes = bytes(data[V2_CLIENT_ID_OFFSET:V2_CLIENT_ID_OFFSET + V2_CLIENT_ID_LEN])
+    return pkt_type, stream_id, sequence, client_id_bytes
+
+
+def _fmt_addr(addr: tuple[str, int]) -> str:
+    return f"{addr[0]}:{addr[1]}"
+
+
+def _decode_lobby_name(raw: bytes) -> str:
+    """Decode the 32-byte null-padded UTF-8 display-name field. Tolerant of garbage."""
+    end = raw.find(b"\x00")
+    if end >= 0:
+        raw = raw[:end]
+    try:
+        return raw.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _read_ticked_ids(body: bytes, tag_end: int) -> Optional[set[bytes]]:
+    """The ticked-ids list from a hello body, or None when it carries none ("everyone in my group")."""
+    if len(body) <= tag_end:
+        return None
+    count = min(body[tag_end], MAX_TICKED_IDS)
+    ids: set[bytes] = set()
+    start = tag_end + 1
+    for i in range(count):
+        chunk = bytes(body[start + i * V2_CLIENT_ID_LEN:start + (i + 1) * V2_CLIENT_ID_LEN])
+        if len(chunk) < V2_CLIENT_ID_LEN:
+            break
+        ids.add(chunk)
+    return ids
+
+
+def _hears_itself(ticked: Optional[set[bytes]], client_id: uuid.UUID) -> bool:
+    """True when a member's ticked list names the member itself: it asks to be sent its own sound back (see _handle_v2)."""
+    return ticked is not None and client_id.bytes in ticked
+
+
+def _encode_lobby_name(name: str) -> bytes:
+    """Encode a display name into LOBBY_NAME_BYTES, null-padded."""
+    encoded = (name or "").encode("utf-8", errors="replace")[:LOBBY_NAME_BYTES]
+    return encoded + b"\x00" * (LOBBY_NAME_BYTES - len(encoded))
+
+
+class Relay:
+    """Dispatcher that owns both the v1 pair state and the v2 lobby state."""
+
+    def __init__(self, sock: socket.socket, log: logging.Logger, max_clients: int,
+                 require_addr_check: bool = False, max_per_ip: int = MAX_ENTRIES_PER_IP,
+                 v2_watch_only: bool = False):
+        self.sock = sock
+        self.log = log
+        self.max_clients = max_clients
+        self.max_per_ip = max_per_ip
+        # Enforcement switch for the address-proof: False = watch-only (log who WOULD be blocked,
+        # forward anyway — safe while pre-5.6 clients that can't echo are still around); True =
+        # withhold all forwarded traffic from unverified addresses. Flipped by --require-addr-check
+        # in a later server release once the 5.6 auto-update has rolled through. It governs the v1
+        # pairs; the v2 groups have their own switch, just below.
+        self.require_addr_check = require_addr_check
+        # The v2 groups are enforced whatever require_addr_check says, unless this is set (pre-release sweep
+        # 2026-09-25). In watch-only mode anybody could send hellos from made-up addresses, in a group they made up
+        # or a real one: each made-up address was then sent the member list every second for a minute, the whole list
+        # went out to everybody again whenever a hello changed a name, and the made-up people were LISTED, so real
+        # members saw them and, accepting automatically, ticked them and had their sound sent to them. 56 made-up
+        # entries drew about 155 KB a second out of the relay. So a v2 client that has not answered its address check
+        # is sent nothing but that check: no list, no sound, and it is not in anybody's list, until it answers. Every
+        # Windows app and the lock-screen service answer within a second or two; phones use v1, which this does not
+        # touch. --v2-watch-only (REMSOUND_V2_WATCH_ONLY=1) puts the groups back to watch-only - for a client that
+        # joins a group but cannot answer (the iPhone app is meant to answer; that is not yet confirmed).
+        self.v2_watch_only = v2_watch_only
+        # v1 state
+        self.v1_peers: list[PeerSlot] = []
+        # v2 state
+        self.v2_clients: dict[uuid.UUID, ClientEntry] = {}
+        self.v2_roster_dirty = False  # set when membership changes
+        self.v2_last_roster_broadcast = 0.0
+        # v1 endpoints recently sent the relay hint, and when (see _hint_relay)
+        self.v1_hinted: dict[tuple[str, int], float] = {}
+        # shared
+        self.stats = RelayStats()
+        self.last_stats_log = time.monotonic()
+        # The log limits (LOG_REPEATS_PER_ADDRESS, LOG_LINES_PER_KIND), started again each minute: lines written this
+        # minute per (kind, address) and per kind, and lines held back per kind.
+        self.log_by_address: dict[tuple[str, str], int] = {}
+        self.log_by_kind: dict[str, int] = {}
+        self.log_held_back: dict[str, int] = {}
+        # The server's metronome, per group tag (see TYPE_TIMING).
+        self.beats: dict[bytes, GroupBeat] = {}
+        # The relay's clock for the metronome, in seconds (a test may stand another in).
+        self.clock = time.monotonic
+
+    def note(self, level: int, kind: str, addr: Optional[tuple[str, int]], fmt: str, *args, exc_info: bool = False) -> None:
+        """Write one event line, unless lines of this kind have come too often this minute, from this address or from
+        everybody (see LOG_REPEATS_PER_ADDRESS). Every line a packet can set off comes through here."""
+        ip = addr[0] if addr else ""
+        from_address = self.log_by_address.get((kind, ip), 0)
+        of_kind = self.log_by_kind.get(kind, 0)
+        if from_address >= LOG_REPEATS_PER_ADDRESS or of_kind >= LOG_LINES_PER_KIND:
+            self.log_held_back[kind] = self.log_held_back.get(kind, 0) + 1
+            return
+        self.log_by_address[(kind, ip)] = from_address + 1
+        self.log_by_kind[kind] = of_kind + 1
+        self.log.log(level, fmt, *args, exc_info=exc_info)
+
+    # ------- address-proof (shared by v1 + v2) -----------------------------
+
+    def _addr_check_packet(self, cookie: bytes) -> bytes:
+        """A v1-framed AddrCheck: 12-byte RemSound header + the cookie. v1 framing on purpose —
+        every client (v1 pair or v2 lobby) parses it, and the echo comes back the same way."""
+        header = bytearray(V1_HEADER_LEN)
+        header[0:4] = MAGIC
+        header[4] = V1_VERSION
+        header[5] = TYPE_ADDR_CHECK
+        return bytes(header) + cookie
+
+    def _send_addr_check(self, entry, addr: tuple[str, int], now: float) -> None:
+        """Issue (or re-issue) the cookie challenge for an entry. Throttled; keeps the same cookie
+        until verified so a slow echo still matches."""
+        if entry.verified or (now - entry.cookie_sent) < ADDR_CHECK_RESEND_SECONDS:
+            return
+        if not entry.cookie:
+            entry.cookie = os.urandom(ADDR_CHECK_COOKIE_LEN)
+        entry.cookie_sent = now
+        try:
+            self.sock.sendto(self._addr_check_packet(entry.cookie), addr)
+        except OSError as e:
+            self.note(logging.WARNING, "addr_check_send_failed", addr,
+                      "event=addr_check_send_failed to=%s err=%s", _fmt_addr(addr), e)
+
+    def _try_verify(self, entry, data: bytes, addr: tuple[str, int], header_len: int) -> bool:
+        """An AddrCheck came back from a registered endpoint — verify its cookie. The echo may
+        arrive v1-framed (as sent) even from a v2 client, so callers pass their header length.
+        True when this echo is the one that proved it."""
+        cookie = data[header_len:header_len + ADDR_CHECK_COOKIE_LEN]
+        if entry.cookie and cookie == entry.cookie and not entry.verified:
+            entry.verified = True
+            self.stats.addr_checks_verified += 1
+            self.note(logging.INFO, "addr_verified", addr, "event=addr_verified addr=%s", _fmt_addr(addr))
+            if isinstance(entry, ClientEntry):
+                # A v2 client that has just proved itself was, until now, sent nothing and listed nowhere (while v2 is
+                # enforced). It is a member like any other from this moment, so the list goes out again - to it and to
+                # everybody who should now see it - rather than on the next heartbeat (pre-release sweep 2026-09-25).
+                self.v2_roster_dirty = True
+            return True
+        return False
+
+    def _v2_enforced(self) -> bool:
+        """Is anything but the address check withheld from a v2 client that has not proved its address? Yes unless
+        --v2-watch-only; and always under --require-addr-check, which has enforced the groups since it existed."""
+        return self.require_addr_check or not self.v2_watch_only
+
+    def _v2_note_withheld(self, entry: ClientEntry) -> None:
+        """Log, once per client, that nothing but its address check is being sent to it - not once per packet or per
+        list, which a flood of made-up hellos would turn into a line each (the log limits would hold most of them back,
+        but they would crowd out the lines that matter)."""
+        if entry.withheld_logged:
+            return
+        entry.withheld_logged = True
+        self.note(logging.INFO, "withheld_unverified", entry.addr,
+                  "event=withheld_unverified proto=v2 addr=%s (address not proved: no member list, no sound and not "
+                  "listed until it answers its address check)", _fmt_addr(entry.addr))
+
+    def _ip_at_cap(self, ip: str) -> bool:
+        """True when this source IP already holds max_per_ip lobby/pair entries (MAX_ENTRIES_PER_IP by default). A group
+        member holding a pair slot beside a phone is one device, so its slot is not counted a second time."""
+        members = {e.addr for e in self.v2_clients.values()}
+        count = sum(1 for p in self.v1_peers if p.addr[0] == ip and p.addr not in members)
+        count += sum(1 for e in self.v2_clients.values() if e.addr[0] == ip)
+        return count >= self.max_per_ip
+
+    def _turn_out_unproven(self, ip: Optional[str], why: str) -> bool:
+        """Make room for a hello by turning out the longest-waiting client that has never proved its address: anywhere
+        on the relay (ip None), or at one address. True when somebody went.
+
+        A hello is one packet, and the address it comes from can be made up. Nothing stopped anybody filling all the
+        relay's places, or the MAX_ENTRIES_PER_IP places of somebody else's address, with made-up hellos from made-up
+        addresses - one each a minute kept them - and so keeping real people out (review 2026-09-25). A made-up address
+        can never answer its address check, so when there is no room an unproven place gives way. A real app answers
+        within a second or two (all 64 joins on Ed's relay did, September 2026) and is never turned out after that; and
+        nothing changes at all until the relay or an address is full. Longest-waiting first: the dictionary keeps the
+        order people joined in."""
+        for cid, e in self.v2_clients.items():
+            if not e.verified and (ip is None or e.addr[0] == ip):
+                break
+        else:
+            return False
+        del self.v2_clients[cid]
+        self.note(logging.INFO, "client_turned_out", e.addr,
+                  "event=client_turned_out reason=address_never_proved room_for=%s client_id=%s addr=%s",
+                  why, cid, _fmt_addr(e.addr))
+        self.stats.lobby_changes += 1
+        self.v2_roster_dirty = True
+        return True
+
+    # ------- where v1 and v2 meet ------------------------------------------
+
+    def _v2_entry_at(self, addr: tuple[str, int]) -> Optional[ClientEntry]:
+        """The group member registered at this endpoint, if any. A v2 client sends its v1 heartbeats from the
+        same socket, so this is how a v1 packet is recognised as coming from a group member."""
+        for e in self.v2_clients.values():
+            if e.addr == addr:
+                return e
+        return None
+
+    def _v1_paired(self, addr: tuple[str, int]) -> bool:
+        return len(self.v1_peers) == 2 and any(p.addr == addr for p in self.v1_peers)
+
+    def _v1_may_pair(self, addr: tuple[str, int], partner: PeerSlot) -> bool:
+        """May the endpoint at addr share the v1 pair with partner? A v1-only device pairs as it always has. A
+        group member pairs only with a v1-only device (never another member: they reach each other in their
+        group), and only one on its own password when that device has told us its fingerprint."""
+        me = self._v2_entry_at(addr)
+        if me is None:
+            return True
+        if self._v2_entry_at(partner.addr) is not None:
+            return False
+        return not partner.fingerprint or not me.group or partner.fingerprint == me.group
+
+    def _v1_dissolve_group_pairs(self) -> None:
+        """Both pair slots held by group members (they paired before either joined over v2): the pair only
+        duplicates what their groups already carry, and keeps both slots from a v1-only device. Free them."""
+        if len(self.v1_peers) == 2 and all(self._v2_entry_at(p.addr) is not None for p in self.v1_peers):
+            self.note(logging.INFO, "pair_dissolved", self.v1_peers[0].addr,
+                "event=pair_dissolved reason=both_in_groups a=%s b=%s",
+                _fmt_addr(self.v1_peers[0].addr), _fmt_addr(self.v1_peers[1].addr),
+            )
+            self.v1_peers = []
+            self.stats.pair_changes += 1
+            self.v2_roster_dirty = True
+
+    def _v1_drop_mismatched_member(self, peer: PeerSlot) -> None:
+        """A v1-only device has just told us its password fingerprint. If its partner is a group member on a
+        different password, the pair can carry nothing either way: free the member's slot so a member of the
+        right group can take it."""
+        if not peer.fingerprint:
+            return
+        for other in self.v1_peers:
+            if other is peer:
+                continue
+            member = self._v2_entry_at(other.addr)
+            if member is not None and member.group and member.group != peer.fingerprint:
+                self.v1_peers.remove(other)
+                self.note(logging.INFO, "pair_dissolved", other.addr,
+                          "event=pair_dissolved reason=different_group member=%s", _fmt_addr(other.addr))
+                self.stats.pair_changes += 1
+                self.v2_roster_dirty = True
+                return
+
+    def _hint_relay(self, addr: tuple[str, int], now: float) -> None:
+        """A v1 packet from an endpoint the pair has no room for. Answer with an address-check cookie, so a
+        newer client learns it is talking to a relay and can join its group over v2; an older client ignores
+        it or echoes it, and either is harmless. At most one every RELAY_HINT_INTERVAL_SECONDS per address,
+        and a bounded table, so a flood of forged sources cannot turn the relay into an amplifier."""
+        if self._v2_entry_at(addr) is not None:
+            return
+        last = self.v1_hinted.get(addr)
+        if last is not None and (now - last) < RELAY_HINT_INTERVAL_SECONDS:
+            return
+        if last is None and len(self.v1_hinted) >= RELAY_HINT_MAX_PENDING:
+            return
+        self.v1_hinted[addr] = now
+        try:
+            self.sock.sendto(self._addr_check_packet(os.urandom(ADDR_CHECK_COOKIE_LEN)), addr)
+        except OSError as e:
+            self.note(logging.WARNING, "relay_hint_send_failed", addr,
+                      "event=relay_hint_send_failed to=%s err=%s", _fmt_addr(addr), e)
+
+    def _may_forward_to(self, entry, proto: str) -> bool:
+        """The enforcement point: may forwarded traffic be delivered to this entry's address?
+        Watch-only mode always says yes but logs (once per entry) who WOULD have been blocked.
+        A v2 client is enforced unless --v2-watch-only (see Relay.__init__)."""
+        if entry.verified:
+            return True
+        if self.require_addr_check or (proto == "v2" and self._v2_enforced()):
+            self.stats.blocked_unverified += 1
+            self.stats.blocked_devices.add(entry.addr)
+            if proto == "v2":
+                self._v2_note_withheld(entry)
+            return False
+        self.stats.would_block_unverified += 1
+        self.stats.would_block_devices.add(entry.addr)
+        if not entry.would_block_logged:
+            entry.would_block_logged = True
+            self.note(logging.INFO, "would_block_unverified", entry.addr,
+                "event=would_block_unverified proto=%s addr=%s (watch-only; enforcement would withhold traffic)",
+                proto, _fmt_addr(entry.addr),
+            )
+        return True
+
+    # ------- v1 (pairwise) -------------------------------------------------
+
+    def _v1_find_slot(self, addr: tuple[str, int]) -> Optional[int]:
+        for i, p in enumerate(self.v1_peers):
+            if p.addr == addr:
+                return i
+        return None
+
+    def _v1_expire_idle(self, now: float) -> None:
+        if not self.v1_peers:
+            return
+        kept: list[PeerSlot] = []
+        dropped: list[tuple[str, int]] = []
+        for p in self.v1_peers:
+            if (now - p.last_seen) <= IDLE_TIMEOUT_SECONDS:
+                kept.append(p)
+            else:
+                dropped.append(p.addr)
+        if dropped:
+            self.v1_peers = kept
+            self.v2_roster_dirty = True  # a member's paired flag may have changed
+            for addr in dropped:
+                self.note(logging.INFO, "peer_dropped", addr,
+                    "event=peer_dropped reason=idle addr=%s remaining=%d",
+                    _fmt_addr(addr), len(self.v1_peers),
+                )
+                self.stats.pair_changes += 1
+
+    def _v1_admit_or_replace(self, addr: tuple[str, int], now: float) -> int:
+        if len(self.v1_peers) < 2:
+            if not self.v1_peers and self._v2_entry_at(addr) is not None:
+                return -1  # a group member takes a slot only beside a v1-only device already waiting in one
+            if self.v1_peers and not self._v1_may_pair(addr, self.v1_peers[0]):
+                return -1
+            self.v2_roster_dirty = True  # a member's paired flag may change
+            self.v1_peers.append(PeerSlot(addr=addr, last_seen=now))
+            self.note(logging.INFO, "peer_joined", addr,
+                "event=peer_joined addr=%s slots_filled=%d",
+                _fmt_addr(addr), len(self.v1_peers),
+            )
+            self.stats.pair_changes += 1
+            if len(self.v1_peers) == 2:
+                self.note(logging.INFO, "peer_paired", addr,
+                    "event=peer_paired a=%s b=%s",
+                    _fmt_addr(self.v1_peers[0].addr),
+                    _fmt_addr(self.v1_peers[1].addr),
+                )
+            return len(self.v1_peers) - 1
+        oldest = 0 if self.v1_peers[0].last_seen <= self.v1_peers[1].last_seen else 1
+        if (now - self.v1_peers[oldest].last_seen) > IDLE_TIMEOUT_SECONDS:
+            if not self._v1_may_pair(addr, self.v1_peers[1 - oldest]):
+                return -1
+            self.v2_roster_dirty = True
+            old_addr = self.v1_peers[oldest].addr
+            self.v1_peers[oldest] = PeerSlot(addr=addr, last_seen=now)
+            self.note(logging.INFO, "peer_replaced", addr,
+                "event=peer_replaced old=%s new=%s",
+                _fmt_addr(old_addr), _fmt_addr(addr),
+            )
+            self.stats.pair_changes += 1
+            return oldest
+        return -1
+
+    def _handle_v1(self, data: bytes, addr: tuple[str, int]) -> None:
+        parsed = parse_header_v1(data)
+        if parsed is None:
+            self.stats.rejected_bad_header += 1
+            return
+        pkt_type = parsed[0]
+        now = time.monotonic()
+        if pkt_type == TYPE_ADDR_CHECK:
+            # A cookie coming home. Echoes come back v1-framed regardless of the client's protocol
+            # (clients echo our framing verbatim), so match by ADDRESS across BOTH protocol states
+            # — and never ADMIT anyone off one: an AddrCheck is proof, not a join request. It may also be a
+            # proved member's NEW address answering the check it was sent while it waits to take over
+            # (PendingMove, pre-release sweep 2026-09-25); if the old address has fallen silent, that is the move.
+            member = moved = False
+            for cid, e in self.v2_clients.items():
+                if e.addr == addr:
+                    self._try_verify(e, data, addr, V1_HEADER_LEN)
+                    member = True
+                elif e.move is not None and e.move.addr == addr:
+                    self._try_verify(e.move, data, addr, V1_HEADER_LEN)
+                    moved = self._v2_move_if_ready(cid, e, now) or moved
+                    member = True
+            if moved:
+                self._v1_dissolve_group_pairs()
+            if member:
+                return
+            found = self._v1_find_slot(addr)
+            if found is not None:
+                self._try_verify(self.v1_peers[found], data, addr, V1_HEADER_LEN)
+            return
+        idx = self._v1_find_slot(addr)
+        if idx is None:
+            # A group member's ordinary heartbeats are how it offers to partner a waiting phone. It is already in the
+            # lobby, so the cap has counted it, and with no phone waiting there is simply nothing for it to join: none of
+            # that is a refusal or a drop worth counting. These counts are what the enforcement decision is read from,
+            # and every member's heartbeats used to swell them (review, 2026-09-23).
+            member = self._v2_entry_at(addr) is not None
+            if not member and self._ip_at_cap(addr[0]):
+                self.stats.rejected_ip_cap += 1
+                return
+            self._v1_expire_idle(now)
+            idx = self._v1_admit_or_replace(addr, now)
+            if idx < 0:
+                if not member:
+                    self.stats.dropped_unpaired += 1
+                self._hint_relay(addr, now)
+                return
+        peer = self.v1_peers[idx]
+        peer.last_seen = now
+        peer.rx_packets += 1
+        if pkt_type == TYPE_FORMAT and len(data) >= V1_HEADER_LEN + FORMAT_FINGERPRINT_OFFSET + GROUP_TAG_BYTES:
+            start = V1_HEADER_LEN + FORMAT_FINGERPRINT_OFFSET
+            fingerprint = bytes(data[start:start + GROUP_TAG_BYTES])
+            if fingerprint != peer.fingerprint:
+                peer.fingerprint = fingerprint
+                self._v1_drop_mismatched_member(peer)
+        self._send_addr_check(peer, addr, now)
+        if len(self.v1_peers) == 2:
+            other = self.v1_peers[1 - idx]
+            if not self._may_forward_to(other, "v1"):
+                return
+            try:
+                self.sock.sendto(data, other.addr)
+                other.tx_packets += 1
+                self.stats.forwarded += 1
+            except OSError as e:
+                self.note(logging.WARNING, "send_failed", other.addr,
+                    "event=send_failed proto=v1 to=%s err=%s",
+                    _fmt_addr(other.addr), e,
+                )
+        else:
+            self.stats.dropped_unpaired += 1
+
+    # ------- v2 (lobby) ----------------------------------------------------
+
+    def _v2_build_roster_packet(self, recipient_id: uuid.UUID, recipient: ClientEntry) -> bytes:
+        """A LobbyRoster for one recipient: the members of ITS group only (another group's names and ids are
+        none of its business), each with a flags byte of its own, then one flags byte for the whole list.
+
+        Each member's flags byte says whether that member has ticked THIS recipient, which is how an app can
+        say "waiting for them to tick you" rather than going quiet with nothing to show for it. The trailing
+        byte's bit 0 is set when the recipient holds a v1 slot with a partner, which tells it to keep a v1
+        copy of its audio flowing to that v1-only device."""
+        # Use a separate per-build sequence — clients can ignore it; we use 0.
+        header = bytearray(V2_HEADER_LEN)
+        header[0:4] = MAGIC
+        header[4] = V2_VERSION
+        header[5] = TYPE_LOBBY_ROSTER
+        struct.pack_into("<H", header, 6, 0)  # stream_id (unused)
+        struct.pack_into("<I", header, 8, 0)  # sequence (unused)
+        header[V2_CLIENT_ID_OFFSET:V2_CLIENT_ID_OFFSET + V2_CLIENT_ID_LEN] = SERVER_CLIENT_ID_BYTES
+        payload = bytearray()
+        # A client that has not proved its address is nobody's business yet: while v2 is enforced it is left out of every
+        # list, so a made-up entry is never shown to real members, and never ticked by one that accepts automatically
+        # (pre-release sweep 2026-09-25). It appears the moment it answers its address check.
+        listed_unproven = not self._v2_enforced()
+        members = [(cid, e) for cid, e in self.v2_clients.items()
+                   if e.group == recipient.group and (e.verified or listed_unproven)][:255]  # 1-byte count
+        payload.append(len(members))
+        for cid, entry in members:
+            payload.extend(cid.bytes)
+            payload.extend(_encode_lobby_name(entry.display_name))
+            # None means "everyone", which is what a client that knows nothing about ticking sends.
+            ticks_you = cid != recipient_id and (entry.ticked is None or recipient_id.bytes in entry.ticked)
+            payload.append(ROSTER_MEMBER_FLAG_TICKS_YOU if ticks_you else 0)
+        payload.append(ROSTER_FLAG_V1_PAIRED if self._v1_paired(recipient.addr) else 0)
+        return bytes(header) + bytes(payload)
+
+    def _v2_broadcast_roster(self, now: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        if not self.v2_clients:
+            self.v2_roster_dirty = False
+            self.v2_last_roster_broadcast = now
+            return
+        enforced = self._v2_enforced()
+        for cid, entry in self.v2_clients.items():
+            # Under enforcement even the roster stays away from unverified addresses — it's
+            # relay-originated traffic too, and it grows with the lobby. (Watch-only: send.) The v2
+            # groups are enforced unless --v2-watch-only: a list sent every second to a made-up address
+            # is what made the relay an amplifier (pre-release sweep 2026-09-25).
+            if enforced and not entry.verified:
+                self.stats.rosters_withheld_unverified += 1
+                self._v2_note_withheld(entry)
+                continue
+            try:
+                self.sock.sendto(self._v2_build_roster_packet(cid, entry), entry.addr)
+            except OSError as e:
+                self.note(logging.WARNING, "send_failed", entry.addr,
+                    "event=send_failed proto=v2 reason=roster to=%s err=%s",
+                    _fmt_addr(entry.addr), e,
+                )
+        self.v2_roster_dirty = False
+        self.v2_last_roster_broadcast = now
+
+    def _v2_send_lobby_full(self, attempted_client_id: uuid.UUID, addr: tuple[str, int]) -> None:
+        """Send a LobbyFull packet back to an over-cap client and log it."""
+        header = bytearray(V2_HEADER_LEN)
+        header[0:4] = MAGIC
+        header[4] = V2_VERSION
+        header[5] = TYPE_LOBBY_FULL
+        struct.pack_into("<H", header, 6, 0)
+        struct.pack_into("<I", header, 8, 0)
+        header[V2_CLIENT_ID_OFFSET:V2_CLIENT_ID_OFFSET + V2_CLIENT_ID_LEN] = SERVER_CLIENT_ID_BYTES
+        # Payload: 1 byte current count, 1 byte max count.
+        payload = bytes([len(self.v2_clients) & 0xFF, self.max_clients & 0xFF])
+        try:
+            self.sock.sendto(bytes(header) + payload, addr)
+        except OSError as e:
+            self.note(logging.WARNING, "send_failed", addr,
+                "event=send_failed proto=v2 reason=lobby_full to=%s err=%s",
+                _fmt_addr(addr), e,
+            )
+        self.note(logging.INFO, "lobby_full", addr,
+            "event=lobby_full attempted_client_id=%s addr=%s count=%d max=%d",
+            attempted_client_id, _fmt_addr(addr),
+            len(self.v2_clients), self.max_clients,
+        )
+        self.stats.dropped_lobby_full += 1
+
+    def _v2_expire_idle(self, now: float) -> None:
+        if not self.v2_clients:
+            return
+        expired: list[uuid.UUID] = []
+        for cid, entry in self.v2_clients.items():
+            if (now - entry.last_seen) > IDLE_TIMEOUT_SECONDS:
+                expired.append(cid)
+        for cid in expired:
+            entry = self.v2_clients.pop(cid)
+            self.note(logging.INFO, "client_idle_expired", entry.addr,
+                "event=client_idle_expired client_id=%s addr=%s",
+                cid, _fmt_addr(entry.addr),
+            )
+            self.stats.lobby_changes += 1
+            self.v2_roster_dirty = True
+
+    def _v2_candidate_packet(self, client_id: uuid.UUID, entry: ClientEntry, data: bytes, addr: tuple[str, int],
+                             pkt_type: int, now: float) -> bool:
+        """A packet bearing a proved member's id from an address that is not the member's. The address becomes the
+        member's candidate (one at a time: a different address replaces it) and is sent an address check of its own,
+        re-sent at the usual rate. True only when this packet completes the move, and the caller then handles it as the
+        member's own; otherwise nothing it carries is acted on. It does NOT refresh the member's last_seen."""
+        move = entry.move
+        if move is None or move.addr != addr:
+            move = entry.move = PendingMove(addr=addr, since=now)
+            self.note(logging.INFO, "client_endpoint_move_pending", addr,
+                "event=client_endpoint_move_pending client_id=%s old=%s new=%s "
+                "(the new address must answer its address check and the old one fall silent first)",
+                client_id, _fmt_addr(entry.addr), _fmt_addr(addr),
+            )
+        if pkt_type == TYPE_ADDR_CHECK:
+            # An echo wrapped in group framing (the usual one comes back v1-framed, in _handle_v1).
+            header_len = V2_HEADER_LEN if len(data) >= V2_HEADER_LEN + ADDR_CHECK_COOKIE_LEN else V1_HEADER_LEN
+            self._try_verify(move, data, addr, header_len)
+        else:
+            self._send_addr_check(move, addr, now)
+        return self._v2_move_if_ready(client_id, entry, now)
+
+    def _v2_move_if_ready(self, client_id: uuid.UUID, entry: ClientEntry, now: float) -> bool:
+        """Move a proved member to its candidate address if the candidate has proved itself and the member's own address
+        has been silent for REBIND_SILENCE_SECONDS. True when it moved. A candidate still refused once the old address has
+        kept talking for that long after it appeared is logged, once: that is somebody else using the member's id (or a
+        second copy of the same computer's RemSound), not a move."""
+        move = entry.move
+        if move is None or not move.verified:
+            return False
+        quiet = now - entry.last_seen
+        if quiet < REBIND_SILENCE_SECONDS:
+            if not move.refused_logged and (now - move.since) >= REBIND_SILENCE_SECONDS:
+                move.refused_logged = True
+                self.note(logging.WARNING, "client_endpoint_move_refused", move.addr,
+                    "event=client_endpoint_move_refused client_id=%s old=%s new=%s old_heard_s_ago=%.1f "
+                    "(the member's own address is still in use)",
+                    client_id, _fmt_addr(entry.addr), _fmt_addr(move.addr), quiet,
+                )
+            return False
+        old = entry.addr
+        entry.addr = move.addr
+        entry.verified = True
+        entry.cookie = move.cookie
+        entry.cookie_sent = move.cookie_sent
+        entry.would_block_logged = False
+        entry.withheld_logged = False
+        entry.move = None
+        entry.last_seen = now
+        self.note(logging.INFO, "client_endpoint_moved", entry.addr,
+            "event=client_endpoint_moved client_id=%s old=%s new=%s old_silent_s=%.1f",
+            client_id, _fmt_addr(old), _fmt_addr(entry.addr), quiet,
+        )
+        self.v2_roster_dirty = True  # its list, and its v1-paired flag, now go to the new address
+        return True
+
+    def _handle_v2(self, data: bytes, addr: tuple[str, int]) -> None:
+        parsed = parse_header_v2(data)
+        if parsed is None:
+            self.stats.rejected_bad_header += 1
+            return
+        pkt_type, _stream_id, _sequence, cid_bytes = parsed
+        try:
+            client_id = uuid.UUID(bytes=cid_bytes)
+        except ValueError:
+            self.stats.rejected_bad_header += 1
+            return
+        now = time.monotonic()
+        entry = self.v2_clients.get(client_id)
+        # Capture whether this packet came from the endpoint this client_id is CURRENTLY registered
+        # at, BEFORE the NAT-rebind update below overwrites entry.addr. Used to reject spoofed
+        # control packets: the roster broadcast ships every member's client_id to all members, so on
+        # an internet-facing relay anyone who joins learns the others' ids and could otherwise forge
+        # a BYE to evict them. A genuine BYE always comes from the client's own registered endpoint.
+        from_registered_endpoint = entry is not None and entry.addr == addr
+        if entry is None:
+            # Only a hello lets somebody in. It used to be any packet a member might send - audio, a heartbeat - so
+            # anybody could fill every place with made-up ids, from made-up addresses, with no more than one packet
+            # each a minute (review 2026-09-23; Ed agreed the fix). Every client that joins sends a hello first and
+            # every two seconds after, and one whose place has lapsed is back in on its next hello. Phones and older
+            # apps pair over the ordinary protocol, which this does not touch.
+            if pkt_type != TYPE_LOBBY_HELLO:
+                return
+            # With no room, a place held by an address that has never proved itself gives way (_turn_out_unproven).
+            if self._ip_at_cap(addr[0]) and not self._turn_out_unproven(addr[0], "address_full"):
+                self.stats.rejected_ip_cap += 1
+                self.note(logging.WARNING, "join_rejected", addr,
+                    "event=join_rejected reason=ip_cap client_id=%s addr=%s", client_id, _fmt_addr(addr),
+                )
+                return
+            if len(self.v2_clients) >= self.max_clients and not self._turn_out_unproven(None, "relay_full"):
+                self._v2_send_lobby_full(client_id, addr)
+                return
+            entry = ClientEntry(addr=addr, display_name="", last_seen=now)
+            self.v2_clients[client_id] = entry
+            self.note(logging.INFO, "client_joined", addr,
+                "event=client_joined client_id=%s addr=%s count=%d",
+                client_id, _fmt_addr(addr), len(self.v2_clients),
+            )
+            self.stats.lobby_changes += 1
+            self.v2_roster_dirty = True
+        elif entry.addr != addr and entry.verified:
+            # A PROVED member's id from another address. It used to move the member there on the spot, before the
+            # packet was even looked at; every member of a group knows every other member's id (it is in the list), so
+            # one keepalive with somebody else's id sent that person's sound to whoever sent it - to hear them, speak as
+            # them or cut them off (pre-release sweep 2026-09-25, Ed agreed the fix). Now the new address waits beside
+            # the member (PendingMove) and nothing it sends is acted on: not forwarded, not taken as the member's hello,
+            # and no BYE. It takes over only once it has answered an address check of its own AND the member's own
+            # address has gone quiet, which a real move does and a stolen id does not.
+            if not self._v2_candidate_packet(client_id, entry, data, addr, pkt_type, now):
+                return
+            from_registered_endpoint = True  # it has just become the member's address
+        else:
+            # Refresh endpoint (handles NAT rebind) and last-seen. A MOVED endpoint must re-prove
+            # itself — the new address hasn't echoed anything yet, and "rebind" is also exactly
+            # what a spoofed takeover of a known client_id looks like. Only a client that has
+            # never proved an address moves at once like this: it has nothing yet to steal.
+            if entry.addr != addr:
+                self.note(logging.INFO, "client_endpoint_update", addr,
+                    "event=client_endpoint_update client_id=%s old=%s new=%s",
+                    client_id, _fmt_addr(entry.addr), _fmt_addr(addr),
+                )
+                entry.addr = addr
+                entry.verified = False
+                entry.cookie = b""
+                entry.cookie_sent = 0.0
+                entry.would_block_logged = False
+                entry.withheld_logged = False
+                entry.move = None
+            entry.last_seen = now
+        entry.rx_packets += 1
+        # A member may just have joined, or moved, onto an endpoint that holds a v1 slot beside another member.
+        self._v1_dissolve_group_pairs()
+        if pkt_type == TYPE_ADDR_CHECK:
+            # The cookie coming home (the client echoes our v1-framed challenge, so it can land in
+            # the v2 handler only if the client wrapped it v2 — accept both framings). Never forward.
+            header_len = V2_HEADER_LEN if len(data) >= V2_HEADER_LEN + ADDR_CHECK_COOKIE_LEN else V1_HEADER_LEN
+            self._try_verify(entry, data, addr, header_len)
+            return
+        self._send_addr_check(entry, addr, now)
+
+        # Type-specific handling.
+        if pkt_type == TYPE_LOBBY_HELLO:
+            body = data[V2_HEADER_LEN:]
+            new_name = _decode_lobby_name(body[:LOBBY_NAME_BYTES])
+            # The group tag follows the name. A 32-byte hello from before groups existed carries none, and lands
+            # in the empty group with every other client that sent none.
+            tag_end = LOBBY_NAME_BYTES + GROUP_TAG_BYTES
+            new_group = bytes(body[LOBBY_NAME_BYTES:tag_end]) if len(body) >= tag_end else b""
+            if new_name != entry.display_name:
+                entry.display_name = new_name
+                self.note(logging.INFO, "client_named", addr,
+                    "event=client_named client_id=%s name=%r", client_id, new_name,
+                )
+                self.v2_roster_dirty = True
+            new_ticked = _read_ticked_ids(body, tag_end)
+            if new_ticked != entry.ticked:
+                was_echoed = _hears_itself(entry.ticked, client_id)
+                entry.ticked = new_ticked
+                if _hears_itself(new_ticked, client_id) != was_echoed:
+                    self.note(logging.INFO, "self_echo", addr,
+                        "event=self_echo client_id=%s state=%s", client_id, "off" if was_echoed else "on",
+                    )
+                self.note(logging.INFO, "client_ticks", addr,
+                    "event=client_ticks client_id=%s ticked=%s", client_id,
+                    "everyone" if new_ticked is None else len(new_ticked),
+                )
+                # Everyone in the group learns who has ticked them, so the list goes out again at once
+                # rather than on the next heartbeat.
+                self.v2_roster_dirty = True
+            if new_group != entry.group:
+                entry.group = new_group
+                # A short prefix only: enough to see in the log who shares a group, not the whole tag.
+                self.note(logging.INFO, "client_grouped", addr,
+                    "event=client_grouped client_id=%s group=%s", client_id, new_group[:2].hex() or "none",
+                )
+                self.v2_roster_dirty = True
+            return
+        if pkt_type == TYPE_LOBBY_BYE:
+            # Only the endpoint a client is registered at may say goodbye for it — otherwise a
+            # forged BYE bearing a known client_id (learned from the roster) could evict any peer.
+            if not from_registered_endpoint:
+                self.note(logging.WARNING, "bye_rejected", addr,
+                    "event=bye_rejected reason=endpoint_mismatch client_id=%s from=%s",
+                    client_id, _fmt_addr(addr),
+                )
+                return
+            self.v2_clients.pop(client_id, None)
+            self.note(logging.INFO, "client_left", addr,
+                "event=client_left client_id=%s addr=%s reason=bye",
+                client_id, _fmt_addr(addr),
+            )
+            self.stats.lobby_changes += 1
+            self.v2_roster_dirty = True
+            return
+        if pkt_type == TYPE_TIMING:
+            # Read here, never forwarded - and only from a member at the address it is registered at.
+            if from_registered_endpoint and self._may_forward_to(entry, "v2"):
+                self._timing_message(client_id, entry, data[V2_HEADER_LEN:])
+            return
+        if pkt_type not in V2_FORWARDABLE_TYPES:
+            # Unknown / server-originated type from a client. Ignore quietly.
+            return
+        if pkt_type == TYPE_AUDIO:
+            self._audio_note_arrival(entry)
+            if entry.timing_known:
+                self._timing_note_arrival(entry, _stream_id, _sequence)
+
+        # Hearing yourself (Ed, 2026-10-01: "unmute myself to test round trip"): a member whose own hello names itself among
+        # the people it has ticked is sent its own sound back, as Jamulus sends you your own channel - its sound only (Audio
+        # and Format), never its heartbeats or anything else. Only on an explicit self-tick: a hello with no list at all
+        # means "everyone in my group", and that has never meant yourself.
+        if pkt_type in (TYPE_AUDIO, TYPE_FORMAT) and from_registered_endpoint and _hears_itself(entry.ticked, client_id)                 and self._may_forward_to(entry, "v2"):
+            try:
+                self.sock.sendto(data, entry.addr)
+                entry.tx_packets += 1
+                self.stats.forwarded += 1
+            except OSError as e:
+                self.note(logging.WARNING, "send_failed", entry.addr,
+                    "event=send_failed proto=v2 to=%s err=%s",
+                    _fmt_addr(entry.addr), e,
+                )
+
+        # Fan-out forwarding to every OTHER client in the same group (verified addresses only, once enforcing).
+        for other_id, other in self.v2_clients.items():
+            if other_id == client_id or other.group != entry.group:
+                continue
+            # Both must have ticked each other, exactly as two people on one network must each tick the other
+            # before sound passes. A client that sent no list has ticked everyone in its group.
+            if entry.ticked is not None and other_id.bytes not in entry.ticked:
+                continue
+            if other.ticked is not None and client_id.bytes not in other.ticked:
+                continue
+            if not self._may_forward_to(other, "v2"):
+                continue
+            try:
+                self.sock.sendto(data, other.addr)
+                other.tx_packets += 1
+                self.stats.forwarded += 1
+            except OSError as e:
+                self.note(logging.WARNING, "send_failed", other.addr,
+                    "event=send_failed proto=v2 to=%s err=%s",
+                    _fmt_addr(other.addr), e,
+                )
+
+    # ------- how steadily each client's sound arrives (event=audio_timing) ---
+
+    def _audio_note_arrival(self, entry: ClientEntry) -> None:
+        now = self.clock()
+        if entry.audio_count:
+            gap_ms = (now - entry.audio_last_arrival) * 1000
+            if gap_ms > entry.audio_max_gap:
+                entry.audio_max_gap = gap_ms
+            if gap_ms > AUDIO_GAP_LONG_MS:
+                entry.audio_long_gaps += 1
+        entry.audio_last_arrival = now
+        entry.audio_count += 1
+
+    def _log_audio_timing(self) -> None:
+        """Once a minute, beside event=stats: for each client that sent sound, how many packets, the longest wait between
+        two and how many waits were longer than AUDIO_GAP_LONG_MS - then counted afresh. A wait here is the network's (or
+        the sender's) doing; the relay passes each packet on within a fraction of a millisecond."""
+        for cid, e in self.v2_clients.items():
+            if e.audio_count:
+                self.log.info(
+                    "event=audio_timing client_id=%s addr=%s packets=%d max_gap_ms=%.1f gaps_over_%dms=%d",
+                    cid, _fmt_addr(e.addr), e.audio_count, e.audio_max_gap, int(AUDIO_GAP_LONG_MS), e.audio_long_gaps,
+                    extra={"keep": True},
+                )
+            e.audio_count = 0
+            e.audio_max_gap = 0.0
+            e.audio_long_gaps = 0
+
+    # ------- the server's metronome (TYPE_TIMING) ----------------------------
+
+    def _timing_now_us(self) -> int:
+        return int(self.clock() * 1_000_000)
+
+    def _log_metronome_timing(self, group: bytes) -> None:
+        """Every TIMING_LOG_EVERY_SECONDS while a group's metronome plays, for each member timed: how many readings, how
+        much later than the least a typical and a late packet arrive (the path's jitter), and how far the least has moved
+        since the last line (the clocks drifting apart, or the path changing). The least is what the beat is built on."""
+        now = self.clock()
+        for cid, e in self.v2_clients.items():
+            if e.group != group or not e.timing_known or now - e.timing_logged_at < TIMING_LOG_EVERY_SECONDS:
+                continue
+            least = self._timing_delay_us(e)
+            if least is None:
+                continue   # the first line comes the moment it is measured
+            e.timing_logged_at = now
+            later = sorted(d - least for _, d in e.timing_samples)
+            moved = "" if e.timing_logged_delay_us is None else " moved_ms=%.2f" % ((least - e.timing_logged_delay_us) / 1000)
+            e.timing_logged_delay_us = least
+            self.log.info(
+                "event=metronome_timing client_id=%s addr=%s readings=%d typical_ms=%.2f late_ms=%.2f%s",
+                cid, _fmt_addr(e.addr), len(later), later[len(later) // 2] / 1000, later[int(len(later) * 0.95)] / 1000, moved,
+            )
+
+    def _timing_note_arrival(self, entry: ClientEntry, stream_id: int, sequence: int) -> None:
+        arrivals = entry.timing_arrivals.get(stream_id)
+        if arrivals is None:
+            # A stream gets a new id when its encoder starts again, so the oldest stream kept makes way (four at most).
+            while len(entry.timing_arrivals) >= 4:
+                del entry.timing_arrivals[next(iter(entry.timing_arrivals))]
+            arrivals = entry.timing_arrivals[stream_id] = OrderedDict()
+        arrivals[sequence] = self._timing_now_us()
+        while len(arrivals) > TIMING_ARRIVALS_KEPT:
+            arrivals.popitem(last=False)
+
+    def _timing_delay_us(self, entry: ClientEntry) -> Optional[int]:
+        """How long this member's sound takes to get here, plus the difference between its clock and ours: the least of
+        the last TIMING_DELAY_WINDOW_SECONDS (the packet that waited least on the way). The clocks' difference is in it on
+        purpose - it turns our beat straight into the member's own clock."""
+        now = self._timing_now_us()
+        window = int(TIMING_DELAY_WINDOW_SECONDS * 1_000_000)
+        while entry.timing_samples and now - entry.timing_samples[0][0] > window:
+            entry.timing_samples.popleft()
+        return min((d for _, d in entry.timing_samples), default=None)
+
+    def _timing_message(self, client_id: uuid.UUID, entry: ClientEntry, body: bytes) -> None:
+        if not body:
+            return
+        kind = body[0]
+        if kind == TIMING_REPORT:
+            self._timing_report(entry, body)
+            return
+        beat = self.beats.setdefault(entry.group, GroupBeat())
+        if kind == TIMING_CLAIM:
+            if beat.master is not None and beat.master != client_id and beat.master in self.v2_clients:
+                return   # somebody leads it; the grids say who
+            if beat.master != client_id:
+                beat.master = client_id
+                beat.version += 1
+                self.note(logging.INFO, "metronome_master", entry.addr,
+                    "event=metronome_master client_id=%s group=%s", client_id, entry.group[:2].hex() or "none")
+            self._timing_send_grids(entry.group)
+        elif kind == TIMING_RELEASE:
+            if beat.master != client_id:
+                return
+            beat.master = None
+            beat.running = False
+            beat.version += 1
+            self.note(logging.INFO, "metronome_released", entry.addr,
+                "event=metronome_released client_id=%s", client_id)
+            self._timing_send_grids(entry.group)
+        elif kind == TIMING_SET:
+            if beat.master != client_id or len(body) < 8:
+                return
+            running = body[1] != 0
+            milli_bpm = struct.unpack_from("<I", body, 2)[0]
+            per_bar, unit = body[6], body[7]
+            if not (TIMING_MIN_MILLI_BPM <= milli_bpm <= TIMING_MAX_MILLI_BPM) or not (1 <= per_bar <= 32) or unit not in (1, 2, 4, 8, 16, 32):
+                return
+            if not self._timing_set(beat, running, milli_bpm, per_bar, unit):
+                return
+            self.note(logging.INFO, "metronome_set", entry.addr,
+                "event=metronome_set client_id=%s running=%d bpm=%.3f signature=%d/%d version=%d",
+                client_id, int(running), milli_bpm / 1000, per_bar, unit, beat.version)
+            self._timing_send_grids(entry.group)
+
+    def _timing_report(self, entry: ClientEntry, body: bytes) -> None:
+        if len(body) < 2:
+            return
+        if not entry.timing_known:
+            self.note(logging.INFO, "metronome_reporting", entry.addr,
+                "event=metronome_reporting addr=%s (this member's sound is timed from now on)", _fmt_addr(entry.addr))
+        entry.timing_known = True
+        count = min(body[1], TIMING_MAX_ENTRIES)
+        now = self._timing_now_us()
+        for i in range(count):
+            at = 2 + i * 14
+            if len(body) < at + 14:
+                break
+            stream_id, sequence, captured_us = struct.unpack_from("<HIq", body, at)
+            arrived = entry.timing_arrivals.get(stream_id, {}).get(sequence)
+            if arrived is not None:
+                entry.timing_samples.append((now, arrived - captured_us))
+
+    @staticmethod
+    def _timing_beat_us(beat: GroupBeat) -> float:
+        return 60_000_000_000 / beat.milli_bpm
+
+    def _timing_set(self, beat: GroupBeat, running: bool, milli_bpm: int, per_bar: int, unit: int) -> bool:
+        """False when it changes nothing - the master repeats its setting each second, in case one was lost."""
+        if running == beat.running and (not running or (milli_bpm, per_bar, unit) == (beat.milli_bpm, beat.beats_per_bar, beat.beat_unit)):
+            return False
+        now = self._timing_now_us()
+        if running and not beat.running:
+            # Started: beat one a moment from now, as the app's own metronome starts.
+            beat.anchor_beat = 0
+            beat.anchor_us = now + int(TIMING_START_LEAD_SECONDS * 1_000_000)
+        elif running and beat.running:
+            # A change while it plays takes effect at the next bar line, the count carried on.
+            length = self._timing_beat_us(beat)
+            passed = max(0, int((now - beat.anchor_us) // length) + 1)
+            beats_on = -(-passed // beat.beats_per_bar) * beat.beats_per_bar
+            beat.anchor_us = int(beat.anchor_us + beats_on * length)
+            beat.anchor_beat += beats_on
+        beat.running = running
+        beat.milli_bpm = milli_bpm
+        beat.beats_per_bar = per_bar
+        beat.beat_unit = unit
+        beat.version += 1
+        return True
+
+    def _timing_grid_packet(self, beat: GroupBeat, recipient_id: uuid.UUID, delay_us: Optional[int]) -> bytes:
+        """One member's beat grid: [flags u8: 1 playing, 2 measured, 4 you lead it][master's client id 16][version u32]
+        [milli-bpm u32][beats per bar u8][beat unit u8][anchor beat u32][anchor time i64, in THE MEMBER'S clock: our beat
+        less its delay, so a note it plays on that beat reaches us on it]."""
+        flags = (1 if beat.running else 0) | (2 if delay_us is not None else 0) | (4 if beat.master == recipient_id else 0)
+        anchor = beat.anchor_us - delay_us if delay_us is not None else 0
+        body = (bytes([TIMING_GRID, flags]) + (beat.master.bytes if beat.master else SERVER_CLIENT_ID_BYTES)
+                + struct.pack("<IIBBIq", beat.version, beat.milli_bpm, beat.beats_per_bar, beat.beat_unit, beat.anchor_beat, anchor))
+        return (MAGIC + bytes([V2_VERSION, TYPE_TIMING]) + struct.pack("<H", 0) + struct.pack("<I", beat.version)
+                + SERVER_CLIENT_ID_BYTES + body)
+
+    def _timing_send_grids(self, group: bytes) -> None:
+        beat = self.beats.get(group)
+        if beat is None:
+            return
+        beat.last_grid = self.clock()
+        for cid, member in self.v2_clients.items():
+            if member.group != group or not member.timing_known or not member.verified:
+                continue
+            try:
+                self.sock.sendto(self._timing_grid_packet(beat, cid, self._timing_delay_us(member)), member.addr)
+                member.tx_packets += 1
+            except OSError as e:
+                self.note(logging.WARNING, "send_failed", member.addr,
+                    "event=send_failed proto=v2-timing to=%s err=%s", _fmt_addr(member.addr), e)
+
+    def _timing_tick(self) -> None:
+        """Every second, each group's grids again (a lost one is replaced, and each member's delay followed as it drifts);
+        a master that has left lets the metronome go."""
+        now = self.clock()
+        for group, beat in list(self.beats.items()):
+            if beat.master is not None and beat.master not in self.v2_clients:
+                beat.master = None
+                beat.running = False
+                beat.version += 1
+                self.note(logging.INFO, "metronome_released", None, "event=metronome_released reason=master_left")
+            if not any(m.group == group for m in self.v2_clients.values()):
+                del self.beats[group]
+                continue
+            if now - beat.last_grid >= TIMING_GRID_EVERY_SECONDS:
+                self._timing_send_grids(group)
+            if beat.running:
+                self._log_metronome_timing(group)
+
+    # ------- shared --------------------------------------------------------
+
+    def handle_packet(self, data: bytes, addr: tuple[str, int]) -> None:
+        if len(data) < 6 or data[0:4] != MAGIC:
+            self.stats.rejected_bad_header += 1
+            return
+        version = data[4]
+        if version == V1_VERSION:
+            self._handle_v1(data, addr)
+        elif version == V2_VERSION:
+            self._handle_v2(data, addr)
+        else:
+            self.stats.rejected_bad_header += 1
+
+    def tick(self, now: float) -> None:
+        """Periodic housekeeping: idle expiry + roster broadcast."""
+        self._v1_expire_idle(now)
+        self._v2_expire_idle(now)
+        if self.v1_hinted:
+            self.v1_hinted = {a: t for a, t in self.v1_hinted.items() if (now - t) < IDLE_TIMEOUT_SECONDS}
+        # The heartbeat list every second, and a changed one sooner - but no sooner than
+        # ROSTER_DIRTY_MIN_INTERVAL_SECONDS after the last, however many changes came in between. This is called
+        # after every packet, and a list honoured on every packet was the relay's biggest amplifier
+        # (pre-release sweep 2026-09-25). Nothing is lost: the flag stays set until the list goes out.
+        self._timing_tick()
+        since = now - self.v2_last_roster_broadcast
+        if self.v2_clients and (
+            since >= ROSTER_HEARTBEAT_SECONDS
+            or (self.v2_roster_dirty and since >= ROSTER_DIRTY_MIN_INTERVAL_SECONDS)
+        ):
+            self._v2_broadcast_roster(now)
+
+    def maybe_log_stats(self, now: float) -> None:
+        if (now - self.last_stats_log) < STATS_INTERVAL_SECONDS:
+            return
+        self.last_stats_log = now
+        s = self.stats
+        v1_summary = ", ".join(
+            f"{_fmt_addr(p.addr)}(rx={p.rx_packets},tx={p.tx_packets})"
+            for p in self.v1_peers
+        ) or "none"
+        v2_summary = ", ".join(
+            f"{cid}@{_fmt_addr(e.addr)}(rx={e.rx_packets},tx={e.tx_packets})"
+            for cid, e in self.v2_clients.items()
+        ) or "none"
+        self.log.info(
+            "event=stats forwarded=%d dropped_unpaired=%d dropped_lobby_full=%d "
+            "rejected_bad_header=%d pair_changes=%d lobby_changes=%d "
+            "client_count=%d v1_peers=[%s] v2_clients=[%s]",
+            s.forwarded, s.dropped_unpaired, s.dropped_lobby_full,
+            s.rejected_bad_header, s.pair_changes, s.lobby_changes,
+            len(self.v2_clients), v1_summary, v2_summary,
+            extra={"keep": True},
+        )
+        self._log_audio_timing()
+        # The address-proof counters get their own line, so the event=stats line above stays exactly as
+        # anything already reading it expects. They are the evidence for when --require-addr-check can
+        # be switched on: while would_block_unverified keeps climbing in watch-only mode, clients that
+        # cannot echo their cookie are still in use, and enforcement would cut them off.
+        # v2_addr_check and rosters_withheld (pre-release sweep 2026-09-25) go on the end, so every field before them
+        # is where it always was.
+        self.log.info(
+            "event=addr_check_stats addr_check=%s addr_checks_verified=%d blocked_unverified=%d "
+            "would_block_unverified=%d rejected_ip_cap=%d blocked_devices=%d would_block_devices=%d "
+            "v2_addr_check=%s rosters_withheld=%d",
+            "ENFORCED" if self.require_addr_check else "watch-only",
+            s.addr_checks_verified, s.blocked_unverified,
+            s.would_block_unverified, s.rejected_ip_cap,
+            len(s.blocked_devices), len(s.would_block_devices),
+            "ENFORCED" if self._v2_enforced() else "watch-only", s.rosters_withheld_unverified,
+            extra={"keep": True},
+        )
+        # What the log limits held back this minute: one line per kind, so a flood shows up as a number, not as a
+        # full memory card. Then the limits start again.
+        for kind, count in sorted(self.log_held_back.items()):
+            self.log.info("event=log_held_back kind=%s lines=%d (the same kind came too often this minute)",
+                          kind, count, extra={"keep": True})
+        self.log_by_address.clear()
+        self.log_by_kind.clear()
+        self.log_held_back.clear()
+        self.stats = RelayStats()
+        for p in self.v1_peers:
+            p.rx_packets = 0
+            p.tx_packets = 0
+        for e in self.v2_clients.values():
+            e.rx_packets = 0
+            e.tx_packets = 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="RemSound UDP relay (dual-protocol v1+v2)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"UDP port to listen on (default {DEFAULT_PORT})")
+    parser.add_argument("--host", default=LISTEN_HOST,
+                        help=f"Bind address (default {LISTEN_HOST})")
+    parser.add_argument("--log-path", default=DEFAULT_LOG_PATH,
+                        help=f"Log file path (default {DEFAULT_LOG_PATH})")
+    parser.add_argument(
+        "--max-clients", type=int,
+        default=int(os.environ.get("REMSOUND_MAX_CLIENTS", str(DEFAULT_MAX_CLIENTS))),
+        help=f"v2 lobby capacity (default {DEFAULT_MAX_CLIENTS}, "
+             "overridable via REMSOUND_MAX_CLIENTS env var)",
+    )
+    parser.add_argument(
+        "--require-addr-check",
+        action="store_true",
+        default=os.environ.get("REMSOUND_REQUIRE_ADDR_CHECK", "") == "1",
+        help="enforce the address-proof cookie: forwarded traffic is withheld from addresses that "
+             "have not echoed their cookie (default off = watch-only, which only logs). Flip on "
+             "once the 5.6+ client rollout is complete - pre-5.6 clients cannot echo.",
+    )
+    parser.add_argument(
+        "--v2-watch-only",
+        action="store_true",
+        default=os.environ.get("REMSOUND_V2_WATCH_ONLY", "") == "1",
+        help="put the v2 groups back to watch-only: a group client that has not echoed its address-proof "
+             "cookie is still sent the member list and sound, and listed (default off = enforced: it is "
+             "sent only the cookie until it echoes). For a group client that cannot echo. The v1 pairs "
+             "follow --require-addr-check as before, and --require-addr-check enforces the groups too.",
+    )
+    parser.add_argument(
+        "--max-per-ip", type=int,
+        default=int(os.environ.get("REMSOUND_MAX_PER_IP", str(MAX_ENTRIES_PER_IP))),
+        help=f"how many devices one address may have on the relay at once (default {MAX_ENTRIES_PER_IP}, "
+             "overridable via REMSOUND_MAX_PER_IP env var)",
+    )
+    args = parser.parse_args()
+    if args.max_clients < 2:
+        sys.stderr.write("remsound-relay: --max-clients must be >= 2\n")
+        return 2
+    if args.max_per_ip < 1:
+        sys.stderr.write("remsound-relay: --max-per-ip must be >= 1\n")
+        return 2
+
+    log = setup_logger(args.log_path)
+    log.info(
+        "event=startup version_supported=v1,v2 listen=%s:%d max_clients=%d max_per_ip=%d addr_check=%s "
+        "v2_addr_check=%s",
+        args.host, args.port, args.max_clients, args.max_per_ip,
+        "ENFORCED" if args.require_addr_check else "watch-only",
+        "ENFORCED" if args.require_addr_check or not args.v2_watch_only else "watch-only",
+    )
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((args.host, args.port))
+    except OSError as e:
+        log.error("event=bind_failed err=%s", e)
+        return 1
+
+    relay = Relay(sock, log, args.max_clients, require_addr_check=args.require_addr_check,
+                  max_per_ip=args.max_per_ip, v2_watch_only=args.v2_watch_only)
+    stop_flag = {"stop": False}
+
+    def _stop_signal(_signum, _frame):
+        stop_flag["stop"] = True
+
+    signal.signal(signal.SIGTERM, _stop_signal)
+    signal.signal(signal.SIGINT, _stop_signal)
+
+    try:
+        while not stop_flag["stop"]:
+            # A changed member list waiting on ROSTER_DIRTY_MIN_INTERVAL_SECONDS goes out when that is up, even
+            # if no packet comes in to wake the loop before the ordinary one-second poll.
+            timeout = (ROSTER_DIRTY_MIN_INTERVAL_SECONDS if relay.v2_roster_dirty and relay.v2_clients
+                       else SOCKET_POLL_TIMEOUT_SECONDS)
+            try:
+                ready, _, _ = select.select([sock], [], [], timeout)
+            except InterruptedError:
+                continue
+            except OSError as e:
+                # select() itself failed (e.g. a transient resource-pressure error on a long-
+                # running, low-RAM host). Log and pause briefly rather than spin or exit.
+                relay.note(logging.WARNING, "select_failed", None, "event=select_failed err=%s", e)
+                time.sleep(0.1)
+                continue
+            now = time.monotonic()
+            # Per-iteration work, fully guarded. A relay that must stay up for DAYS — and that is
+            # reachable from the open internet — can never let a single packet or a housekeeping
+            # tick crash the whole process: that would drop EVERY connected client and force a ~5s
+            # systemd restart. Anything unexpected is logged (with a traceback) and we carry on.
+            addr = None
+            try:
+                if ready:
+                    data, addr = sock.recvfrom(RECV_BUFFER_BYTES)
+                    relay.handle_packet(data, addr)
+                relay.tick(now)
+                relay.maybe_log_stats(now)
+            except OSError as e:
+                # recvfrom, or a sendto that escaped its own guard — transient; keep serving.
+                relay.note(logging.WARNING, "io_error", addr, "event=io_error err=%s", e)
+            except Exception:
+                # Through the log limits too: a packet that trips a fault could otherwise be sent over and over.
+                relay.note(logging.ERROR, "loop_error", addr, "event=loop_error — recovered, continuing", exc_info=True)
+    finally:
+        log.info("event=shutdown")
+        sock.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

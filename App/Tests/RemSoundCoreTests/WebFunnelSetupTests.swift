@@ -1,0 +1,15 @@
+import XCTest
+@testable import RemSoundCore
+
+final class WebFunnelSetupTests:XCTestCase {
+    func testEmptySetupOwnsNothingAndCanRetire(){let setup=WebFunnelSetup();XCTAssertTrue(setup.complete);XCTAssertTrue(setup.retire());XCTAssertEqual(setup.count,0)}
+    func testEveryAcquiredDescriptorAndHandleRetiresExactlyOnce(){let setup=WebFunnelSetup();var calls=[Int]();for n in 1...6 {XCTAssertTrue(setup.own(n){calls.append(n);return true})};XCTAssertFalse(setup.complete);XCTAssertTrue(setup.retire());XCTAssertTrue(setup.retire());XCTAssertEqual(calls,[1,2,3,4,5,6]);XCTAssertTrue(setup.complete)}
+    func testParentFinalizeLeavesReadEndsOwnedUntilActualClose(){let setup=WebFunnelSetup();var calls=[Int]();for n in 1...6 {_ = setup.own(n){calls.append(n);return true}};XCTAssertTrue(setup.retire(except:[1,3]));XCTAssertFalse(setup.complete);XCTAssertEqual(calls,[2,4,5,6]);XCTAssertTrue(setup.close(1));XCTAssertFalse(setup.complete);XCTAssertTrue(setup.close(3));XCTAssertTrue(setup.complete)}
+    func testAmbiguousCloseNeverRetriesAReusedRawNumber(){let setup=WebFunnelSetup();var calls=0;XCTAssertTrue(setup.own(7){calls += 1;return false});XCTAssertFalse(setup.close(7));XCTAssertFalse(setup.close(7));XCTAssertFalse(setup.retire());XCTAssertEqual(calls,1);XCTAssertFalse(setup.complete)}
+    func testOneFailedCloseStillAttemptsOtherOwnedResources(){let setup=WebFunnelSetup();var calls=[Int]();for n in 1...6 {_ = setup.own(n){calls.append(n);return n != 3}};XCTAssertFalse(setup.retire());XCTAssertEqual(calls,[1,2,3,4,5,6]);XCTAssertFalse(setup.complete);XCTAssertFalse(setup.retire());XCTAssertEqual(calls.count,6)}
+    func testDuplicateOwnershipAndUnknownCloseRefuse(){let setup=WebFunnelSetup();var duplicate=0;XCTAssertTrue(setup.own(1){true});XCTAssertFalse(setup.own(1){duplicate += 1;return true});XCTAssertFalse(setup.close(2));XCTAssertTrue(setup.retire());XCTAssertEqual(duplicate,0)}
+    func testKnownClosedNumberCanBeReacquiredButAmbiguousNumberCannot(){let setup=WebFunnelSetup();var calls=0;XCTAssertTrue(setup.own(3){calls += 1;return true});XCTAssertTrue(setup.close(3));XCTAssertTrue(setup.own(3){calls += 1;return false});XCTAssertFalse(setup.close(3));XCTAssertFalse(setup.own(3){calls += 1;return true});XCTAssertFalse(setup.retire());XCTAssertEqual(calls,2)}
+    func testFiniteSetupCapacityRefusesBeforeAnotherFactoryIsAdmitted(){let setup=WebFunnelSetup();for n in 0..<WebFunnelSetup.maximumResources {XCTAssertTrue(setup.own(n){true})};XCTAssertEqual(setup.remaining,0);XCTAssertFalse(setup.own(100){XCTFail("Refused factory");return true});XCTAssertTrue(setup.retire());XCTAssertEqual(setup.count,WebFunnelSetup.maximumResources)}
+    func testDestroyReceiptFailureRemainsOwnedAfterEveryDescriptorCloses(){let setup=WebFunnelSetup();var descriptors=0,destroys=0;XCTAssertTrue(setup.own(3){descriptors += 1;return true});XCTAssertTrue(setup.own(-1){destroys += 1;return false});XCTAssertFalse(setup.retire());XCTAssertFalse(setup.complete);XCTAssertEqual(descriptors,1);XCTAssertEqual(destroys,1);XCTAssertFalse(setup.retire());XCTAssertEqual(destroys,1)}
+
+}

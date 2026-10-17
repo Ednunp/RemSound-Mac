@@ -1,0 +1,4 @@
+module CoreAudioC {
+    header "CoreAudioC.h"
+    export *
+}
