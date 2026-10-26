@@ -29,4 +29,16 @@ final class LogFolderCareTests: XCTestCase {
                      file("Session 2.log", daysOld: 0.001), file("Update.log", daysOld: 5)]
         XCTAssertEqual(LogFolderCare.all(files, now: now).map(\.name), ["Session 1.log"])
     }
+
+    func testTheRunningLogAndItsReadingsAreKeptHoweverQuiet() {
+        // A quiet log can go more than ten minutes without a line; its readings file and their parts go with it.
+        let live = "RemSound-Mac-2026-10-26-0900-Andre"
+        let files = [file("\(live).log", daysOld: 1), file("\(live)-readings.csv", daysOld: 1),
+                     file("\(live)-part2.log", daysOld: 1), file("RemSound-Mac-2026-10-20-0900-Andre.log", daysOld: 6),
+                     file("RemSound-Mac-2026-10-20-0900-Andre-readings.csv", daysOld: 6)]
+        XCTAssertEqual(LogFolderCare.all(files, now: now, sparing: live).map(\.name),
+                       ["RemSound-Mac-2026-10-20-0900-Andre.log", "RemSound-Mac-2026-10-20-0900-Andre-readings.csv"])
+        XCTAssertEqual(LogFolderCare.older(files, thanDays: 5, now: now, sparing: live).count, 2)
+        XCTAssertEqual(LogFolderCare.all(files, now: now).count, 5, "with nothing running, every one may go")
+    }
 }

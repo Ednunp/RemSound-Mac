@@ -1123,8 +1123,10 @@ public final class Session {
             let enabled = profileChoice ?? DiagnosticLoggingPreferences.enabled(in: configuration.settings)
             guard enabled != loggingEnabled else { return true }
             if !enabled {
-                jam.logFile?.close()
+                jam.logFile?.close(keepReadings: false)
                 jam.logFile = nil
+                jam.logPathMonitor?.cancel()
+                jam.logPathMonitor = nil
             }
             loggingEnabled = enabled
             if enabled && running { openDetailedLog() }
@@ -1134,6 +1136,29 @@ public final class Session {
     public var diagnosticLoggingEnabled: Bool { queue.sync { loggingEnabled } }
     public func note(_ message: String) {
         queue.async { [self] in log(message) }
+    }
+    /// Write logs now (Preferences): keep the five minutes before this moment in the readings file, mark it in the log,
+    /// and write everything waiting, so it can be read straight away (Windows 6.2.3).
+    public func writeLogsNow() {
+        queue.async { [self] in
+            guard let file = jam.logFile else { return }
+            let kept = file.capture(lookBack: 300)
+            file.event(.info, "Log", "user requested write logs now" + (kept.map { " - kept: \($0)" } ?? ""))
+            file.flushReadings()
+            file.flush()
+        }
+    }
+    /// This Mac woke from sleep: a line of its own, and named in the reason of a disconnect soon after.
+    public func noteWake() {
+        queue.async { [self] in
+            jam.connectionLog.woke(Date())
+            jam.logFile?.event(.info, "Power", "this Mac woke from sleep")
+        }
+    }
+    /// The log being written now (nil while logging is off or before its first line), the logs folder, and what this
+    /// run's files start with: Preferences' Open current log and Open logs folder, and deleting logs around them.
+    public var currentLog: (file: URL?, folder: URL, stem: String?) {
+        queue.sync { (jam.logFile?.currentFile, jam.logFolder ?? configuration.logsDirectory, jam.logFile?.stem) }
     }
     /// Mac system audio from these applications (bundle IDs) instead of whole outputs; nil: whole outputs. Changed while
     /// sending, only the system audio capture starts again. Completion reports the actual running
@@ -3438,8 +3463,11 @@ extension Session {
         if jam.metronome.role == .master { jam.metronome.releaseMaster() }
         if jam.metronome.role == .follower { jam.metronome.stopFollowing("RemSound stopped", sendLeave: false) }
         if jam.metronome.playing { jam.metronome.startStop() }
-        jam.logFile?.event("log stopped: RemSound stopped")
-        jam.logFile?.close()
+        if let file = jam.logFile {
+            for line in jam.connectionLog.endAll("RemSound stopped", Date()) { file.event(line.level, "Peer", line.text) }
+            file.event(.info, "Log", "log stopped (RemSound stopped)")
+            file.close()
+        }
         jam.logFile = nil
         jam.customSender = nil
         jam.ordinaryPending = []
@@ -3530,7 +3558,7 @@ extension Session {
                 + "estimated total \(String(format: "%.1f", total)) milliseconds."
             descriptions.append(text)
             // One bounded line per second, on the network worker, never the real-time callback.
-            jam.logFile?.snapshot("hear myself: \(text) \(result.count) timed, longest \(String(format: "%.1f", result.longestMs)) ms, \(result.returnedCount) audio blocks returned on this stream."
+            jam.logFile?.event("hear myself: \(text) \(result.count) timed, longest \(String(format: "%.1f", result.longestMs)) ms, \(result.returnedCount) audio blocks returned on this stream."
                 + (isDAW ? " Host input delay before the app bridge is not measured." : ""))
             if let audio {
                 let origin: AudioDelayEstimates.Source = isDAW ? .dawBridge
@@ -3539,7 +3567,7 @@ extension Session {
                 let comparison = audio.delayEstimates.compare(source: origin, captureToReturnMs: result.medianMs,
                     includedInputMs: audio.inputLatencySeconds * 1000, receiveQueueMs: buffered,
                     outputQueueMs: outputQueue, originalOutputMs: outputDelay)
-                jam.logFile?.snapshot("hear myself components: stream \(id), "
+                jam.logFile?.event("hear myself components: stream \(id), "
                     + (comparison?.logDescription ?? "IO comparison unavailable: unknown source origin, incomplete setup "
                         + "or missing/inconsistent device delay reports; input IO-buffer overlap is not established. Existing timing unchanged."))
             }
@@ -3786,83 +3814,161 @@ extension Session {
         }
     }
 
-    /// Open (or move) the detailed log: one file per run, in the chosen folder.
+    /// Open (or move) the detailed log: a log and a readings file per run, in the chosen folder (Windows 6.2.3).
     func openDetailedLog() {
         guard useHardware, loggingEnabled else { return }
         jam.logFile?.close()
         let folder = jam.logFolder ?? configuration.logsDirectory
         let safeName = name.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-        let file = JamLog(directory: folder, prefix: "RemSound-Mac-\(safeName.isEmpty ? "Mac" : safeName)")
-        jam.logFile = file
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
-        file.event("log started: RemSound for Mac \(version), \(name); Jamulus-style \(jam.jamulusStyle ? "on" : "off"), "
+        let file = JamLog(directory: folder, prefix: "RemSound-Mac", machine: safeName, about: "RemSound for Mac \(version)")
+        jam.logFile = file
+        file.event(.info, "Log", "log started: \(name); Jamulus-style \(jam.jamulusStyle ? "on" : "off"), "
             + "Core Audio buffer \(jam.bufferFrames > 0 ? "\(jam.bufferFrames) frames" : "as the devices are"), receive buffer \(receiveJitterMs) ms"
             + "\(receiveAutoTune ? " with auto-tune every \(receiveAutoTuneInterval) s" : ", fixed"), codec \(sendCodec.rawValue), packet size \(sendPacketSize.rawValue), buffer smoothness \(receiveSmoothness), gap sound \(receiveArtifact.label), "
             + "keeping in time with other sound cards \(ClockKeeping.on ? "on" : "off")")
         file.flush()
+        watchNetworkForLog()
     }
 
-    /// Once a second while running: every incoming stream, what we send and to whom, the input and output delays, each
-    /// peer's ping and total latency, the server and the metronome - the figures Ed reads to find crunch and drift.
+    /// The log's own watch on this Mac's network: a change is a line of its own (at most one every ten seconds) and is
+    /// named in the reason of a disconnect that follows it.
+    private func watchNetworkForLog() {
+        guard useHardware, jam.logPathMonitor == nil else { return }
+        jam.logPathSeen = false
+        let watcher = NWPathMonitor()
+        watcher.pathUpdateHandler = { [weak self, weak watcher] path in
+            guard let self, let watcher, self.jam.logPathMonitor === watcher else { return }
+            guard self.jam.logPathSeen else { self.jam.logPathSeen = true; return }
+            let now = Date()
+            self.jam.connectionLog.networkChanged(now)
+            guard now.timeIntervalSince(self.jam.lastNetworkLine) >= 10 else { return }
+            self.jam.lastNetworkLine = now
+            self.jam.logFile?.event(.warn, "Network", path.status == .satisfied
+                ? "this Mac's network changed" : "this Mac has no network now", at: now)
+        }
+        jam.logPathMonitor = watcher
+        watcher.start(queue: queue)
+    }
+
+    /// Once a second while running (Windows 6.2.3, its issue 35, Jonathan Schuster: the logs were too much). What
+    /// RemSound measured goes in the readings file - a row for the Mac, and one for each incoming stream, output card and
+    /// ticked peer - every minute summed up and every second kept only around a problem. The log gets what happened: runs
+    /// of audible gaps, and peers connecting and dropping, a disconnect saying why with the five minutes before it kept.
     func logSecond(now: TimeInterval) {
         guard let file = jam.logFile else { return }
-        file.snapshot(jam.receiveTotals.diagnosticDescription)
-        var lines: [JamLogLines.Stream] = []
+        let date = Date()
+        let sendingOn = sendDevice || sendSystemAudio
+        let fast = jamulusStyleTargets(now: now)
+        let onServer = jam.group != nil || jam.metronome.role != .solo || jam.metronome.playing
+        // What is in use this second: a reading is written only while the thing it measures is.
+        var groups: [String] = []
+        if !streams.isEmpty { groups.append(MacReadings.receiving) }
+        if sendingOn { groups.append(MacReadings.sending) }
+        if sendingOn && !fast.isEmpty { groups.append(MacReadings.jamulusStyle) }
+        if audio != nil { groups.append(MacReadings.audio) }
+        if !plugins.isEmpty { groups.append(MacReadings.plugin) }
+        if onServer { groups.append(MacReadings.server) }
+        let schema = MacReadings.schema
+        let machine = ReadingsRow(schema, groupsInUse: groups)
+        var rows: [ReadingsRow] = []
+        var observations: [String] = []
+
+        let totals = jam.receiveTotals
+        machine.set("sending", sendingOn)
+        machine.set("sendingTo", sendingOn ? sendTargets.count : 0)
+        machine.set("connectedPeers", jam.connectionLog.connectedCount)
+        machine.set("sendFailuresTotal", audioSendFailures)
+        machine.set("canPlayJamulusStyle", jam.canDecode.count(now: now))
+        machine.set("audibleGapsTotal", totals.audibleGaps)
+        machine.set("concealedTotal", totals.concealed)
+        machine.set("lateOrDoubledDroppedTotal", totals.lateOrDoubledDropped)
+        machine.set("gapsNotRepairedTotal", totals.gapsNotRepaired)
+        machine.set("malformedPacketsTotal", Double(totals.malformedPackets))
+        machine.set("refusedAudioTotal", Double(totals.rejectedAudioPayloads))
+        machine.set("notAllowedTotal", Double(totals.notAllowedPackets))
+        machine.set("rejectedPCMTotal", Double(totals.rejectedPCMFragments))
+        machine.set("discardedPCMTotal", Double(totals.discardedPCMPartials))
+        machine.set("reorderWaitsTotal", Double(totals.reorderWaits))
+
+        // Each incoming stream: its own row, its gaps for the run-of-gaps lines, and its peer's share for the connection's.
+        var newGaps = 0
+        var gapsByStream: [String: Int] = [:]
+        var perPeer: [String: (packets: Int, gaps: Int, filledIn: Int, lowest: Double?)] = [:]
         for (key, stream) in streams.sorted(by: { $0.key < $1.key }) {
             let figures = stream.takeLogFigures()
             let parts = key.split(separator: "/")
             let address = parts.first.map(String.init) ?? key
+            let peerName = peers[address]?.name ?? address
             let codec = stream.format.codec == StreamFormat.Codec.opusCustom.rawValue ? "Jamulus-style"
                 : stream.format.codec == StreamFormat.Codec.opus.rawValue ? "Opus" : "PCM"
-            let gap = figures.interval.gaps
-            let depth = figures.interval.queue
-            file.snapshot("receive interval: \(key), accepted audio blocks \(figures.interval.packets), "
-                + "gap max \(gap.map { String(format: "%.3f", $0.maximum) } ?? "unmeasured") ms, "
-                + "gap recent-p95 \(gap.map { String(format: "%.3f", $0.recentP95) } ?? "unmeasured") ms "
-                + "of \(gap?.percentileSamples ?? 0) recent samples; "
-                + "queue read-sampled min/mean/max \(depth.map { String(format: "%.3f/%.3f/%.3f", $0.minimum, $0.mean, $0.maximum) } ?? "unmeasured") ms "
-                + "from \(depth?.count ?? 0) pulls; trims \(figures.trims), trimmed frames \(figures.trimmedFrames), "
-                + "concealed \(figures.concealed), underruns \(figures.underruns). "
-                + "Application acceptance timing; PCM after reassembly, not kernel arrival timestamps.")
-            lines.append(JamLogLines.Stream(peer: peers[address]?.name ?? address, stream: UInt16(parts.last ?? "0") ?? 0,
-                codec: codec, frames: stream.format.frames, packets: figures.packets, maxGapMs: figures.maxGapMs,
-                concealed: figures.concealed, underruns: figures.underruns,
-                queuedMs: stream.queuedFrames * 1000 / Wire.sampleRate, targetMs: receiveJitterMs,
-                clock: ClockKeeping.on ? JamLogLines.Clock(ppm: stream.clockPpm) : nil))
+            let row = ReadingsRow(schema, groupsInUse: [MacReadings.stream],
+                                  stream: "\(peerName)/\(parts.last.map(String.init) ?? "0")")
+            row.text("codec", codec)
+            row.set("frames", stream.format.frames)
+            row.set("packets", figures.packets)
+            row.set("arrivalGapMaxMs", figures.maxGapMs)
+            row.set("arrivalGapP95Ms", figures.interval.gaps?.recentP95)
+            row.set("queueMinMs", figures.interval.queue?.minimum)
+            row.set("queueMeanMs", figures.interval.queue?.mean)
+            row.set("queueMaxMs", figures.interval.queue?.maximum)
+            row.set("queuedMs", stream.queuedFrames * 1000 / Wire.sampleRate)
+            row.set("targetMs", receiveJitterMs)
+            row.set("concealed", figures.concealed)
+            row.set("underruns", figures.underruns)
+            row.set("trims", figures.trims)
+            row.set("trimmedFrames", figures.trimmedFrames)
+            if ClockKeeping.on { row.set("clockPpm", stream.clockPpm) }
+            rows.append(row)
+            newGaps += figures.underruns
+            if figures.underruns > 0 { gapsByStream["\(peerName) on \(codec)", default: 0] += figures.underruns }
+            var share = perPeer[address] ?? (packets: 0, gaps: 0, filledIn: 0, lowest: nil)
+            share.packets += figures.packets
+            share.gaps += figures.underruns
+            share.filledIn += figures.concealed
+            if let low = figures.interval.queue?.minimum { share.lowest = min(share.lowest ?? low, low) }
+            perPeer[address] = share
         }
-        let fast = jamulusStyleTargets(now: now)
-        let sending = !(sendDevice || sendSystemAudio) ? "not sending"
-            : fast.isEmpty ? "sending \(sendCodec.rawValue) to \(sendTargets.count)"
-            : "sending Jamulus-style to \(fast.count) (\(jam.customSentThisSecond) frames), \(sendCodec.rawValue) to \(sendTargets.count - fast.count)"
+
+        // What goes out.
+        machine.set("jamulusStyleTo", fast.count)
+        machine.set("jamulusStyleFrames", jam.customSentThisSecond)
         jam.customSentThisSecond = 0
+        var sentPackets = 0, sentFrames = 0, copies = 0, failures = 0
+        var emitMax: Double?, emitP95: Double?
         for sent in sentAudioDiagnostics.take() {
             let stats = sent.statistics
-            file.snapshot("send interval: stream \(sent.stream), audio datagrams \(stats.packets), normalized frames \(stats.frames), "
-                + "destination copy attempts \(stats.copies), send failures \(stats.failures); "
-                + "emit gap max \(stats.gaps.map { String(format: "%.3f", $0.maximum) } ?? "unmeasured") ms, "
-                + "recent-p95 \(stats.gaps.map { String(format: "%.3f", $0.recentP95) } ?? "unmeasured") ms "
-                + "(p50 \(stats.gaps.map { String(format: "%.3f", $0.recentP50) } ?? "unmeasured"), "
-                + "p99 \(stats.gaps.map { String(format: "%.3f", $0.recentP99) } ?? "unmeasured") ms) "
-                + "of \(stats.gaps?.percentileSamples ?? 0) recent samples. PCM fragments count separately; frames count once.")
+            sentPackets += stats.packets; sentFrames += stats.frames; copies += stats.copies; failures += stats.failures
+            if let gaps = stats.gaps {
+                emitMax = max(emitMax ?? gaps.maximum, gaps.maximum)
+                emitP95 = max(emitP95 ?? gaps.recentP95, gaps.recentP95)
+            }
         }
+        machine.set("sentPackets", sentPackets)
+        machine.set("sentFrames", sentFrames)
+        machine.set("sendCopies", copies)
+        machine.set("sendFailures", failures)
+        machine.set("emitGapMaxMs", emitMax)
+        machine.set("emitGapP95Ms", emitP95)
         let work = sendWorkDiagnostics.take()
-        if !work.isEmpty { file.snapshot(SendWorkDiagnostics.describe(work)) }
-        file.snapshot(JamLogLines.streams(lines, sending: sending) + "; able to play Jamulus-style: \(jam.canDecode.count(now: now))"
-            + "; send failures \(audioSendFailures)")
+        if !work.isEmpty { observations.append(SendWorkDiagnostics.describe(work)) }
+
+        machine.set("pluginInstances", plugins.count)
         for (instance, plugin) in plugins.sorted(by: { $0.key < $1.key }) {
-            file.snapshot("DAW callback observation: instance \(instance), "
+            observations.append("DAW callback observation: instance \(instance), "
                 + plugin.hostCallback.logDescription(now: now, workerRequestFrames: hosts[plugin.pid]?.frames))
         }
+
+        // The sound cards: their delays, and each output card kept in time with the mix.
         if let audio {
-            for budget in audio.callbackBudgetDiagnostics { file.snapshot(budget) }
-            for clock in audio.inputClockDiagnostics { file.snapshot(clock) }
-            for timestamp in audio.captureTimestampDiagnostics { file.snapshot(timestamp) }
+            observations += audio.callbackBudgetDiagnostics
+            observations += audio.inputClockDiagnostics
+            observations += audio.captureTimestampDiagnostics
             for rate in callbackRateMeter.take(audio.callbackCaptureCounters, now: ProcessInfo.processInfo.systemUptime) {
-                file.snapshot(rate.logDescription)
+                observations.append(rate.logDescription)
             }
-            for rate in captureRateMeter.take(audio.inputCaptureCounters,
-                now: ProcessInfo.processInfo.systemUptime) {
-                file.snapshot("capture rate: \(rate.name), \(rate.frames) normalized frames in "
+            for rate in captureRateMeter.take(audio.inputCaptureCounters, now: ProcessInfo.processInfo.systemUptime) {
+                observations.append("capture rate: \(rate.name), \(rate.frames) normalized frames in "
                     + "\(String(format: "%.3f", rate.seconds)) seconds, "
                     + "\(String(format: "%.1f", rate.framesPerSecond)) normalized frames/second; "
                     + "whole observed run \(rate.wholeRunFrames) frames in \(String(format: "%.3f", rate.wholeRunSeconds)) seconds, "
@@ -3870,46 +3976,93 @@ extension Session {
                     + "pipeline target \(Wire.sampleRate) Hz. Native device frame rate is not measured here.")
             }
             for source in captureDriftDiagnostics.snapshots {
-                file.snapshot("capture clock observation: \(source.name), depth \(source.queuedFrames) normalized frames, "
+                observations.append("capture clock observation: \(source.name), depth \(source.queuedFrames) normalized frames, "
                     + "drift \(source.ppm.map { String(format: "%+.1f", $0) } ?? "unmeasured") ppm, "
                     + "rejected ten-second windows \(source.rejectedWindows). Observation only; input clock correction is not applied.")
             }
-            file.snapshot("delays: input \(Int((audio.inputLatencySeconds * 1000).rounded())) ms, output \(Int((audio.outputLatencySeconds * 1000).rounded())) ms, "
-                + "playback queued \(audio.playbackQueuedFrames * 1000 / Wire.sampleRate) ms, mix block \(mixFrames) frames")
-            let cards = audio.outputClocks
-            if !cards.isEmpty {
-                file.snapshot("output cards: " + cards.map {
-                    JamLogLines.outputCard(ppm: $0.ppm, cushionFrames: $0.cushionFrames, laidFrames: $0.laidFrames,
-                        cutFrames: $0.cutFrames, ranDry: $0.ranDry)
-                }.joined(separator: " | "))
+            machine.set("inputLatencyMs", (audio.inputLatencySeconds * 1000).rounded())
+            machine.set("outputLatencyMs", (audio.outputLatencySeconds * 1000).rounded())
+            let queued = audio.playbackQueuedFrames * 1000 / Wire.sampleRate
+            machine.set("playbackQueuedMs", queued)
+            machine.set("playbackQueuedMaxMs", queued)
+            machine.set("mixFrames", mixFrames)
+            for (index, card) in audio.outputClocks.enumerated() {
+                let row = ReadingsRow(schema, groupsInUse: [MacReadings.card], output: "card \(index + 1)")
+                row.set("cardClockPpm", card.ppm)
+                row.set("cushionMs", Double(card.cushionFrames) / 48)
+                row.set("laidMs", Double(card.laidFrames) / 48)
+                row.set("cutMs", Double(card.cutFrames) / 48)
+                row.set("ranDry", card.ranDry)
+                rows.append(row)
             }
         }
+
+        // Every peer: whether it is connected (for the log's connection lines), and each ticked one's ping and latency.
         let nowTickMs = UInt64(ProcessInfo.processInfo.systemUptime * 1000)
-        let outputs=currentOutputPresentationsMs
-        var peerLines: [String] = []
-        for p in peers.values where p.selected {
-            let health=heartbeatTiming.health(for:p.endpoint.address,nowTickMs:nowTickMs)
-            let rtt=health.currentRTT
-            let summary=peerLatencySummary(address:p.endpoint.address,rttMs:rtt,outputs:outputs,heartbeat:health)
+        let outputs = currentOutputPresentationsMs
+        var seen: [ConnectionLog.Seen] = []
+        for p in peers.values {
+            let health = heartbeatTiming.health(for: p.endpoint.address, nowTickMs: nowTickMs)
+            let share = perPeer[p.endpoint.address]
+            seen.append(ConnectionLog.Seen(key: p.endpoint.address, name: p.name, selected: p.selected,
+                state: Self.connectionState(health.state), pingMs: health.currentRTT, silentMs: health.ageMs,
+                packets: share?.packets ?? 0, gaps: share?.gaps ?? 0, filledIn: share?.filledIn ?? 0,
+                lowestBufferMs: share?.lowest))
+            guard p.selected else { continue }
+            let rtt = health.currentRTT
+            let summary = peerLatencySummary(address: p.endpoint.address, rttMs: rtt, outputs: outputs, heartbeat: health)
+            let row = ReadingsRow(schema, groupsInUse: [MacReadings.peer], stream: p.name, output: "peer")
+            row.set("pingMs", rtt)
+            row.set("pingMaxMs", rtt)
+            row.set("totalLatencyMs", summary.maximumCompleteMs)
+            row.text("peerStatus", summary.status)
+            rows.append(row)
             for journey in summary.journeys {
-                file.snapshot("receive latency: \(p.name), stream \(journey.stream), lane \(journey.lane.rawValue), "
-                    + "output \(summary.hasMeasuredOutputs ? String(journey.output+1) : "not measured"); \(journey.report.logDescription)")
+                observations.append("receive latency: \(p.name), stream \(journey.stream), lane \(journey.lane.rawValue), "
+                    + "output \(summary.hasMeasuredOutputs ? String(journey.output + 1) : "not measured"); \(journey.report.logDescription)")
             }
-            if summary.truncated { file.snapshot("receive latency: additional journeys omitted; aggregate total unavailable.") }
-            peerLines.append(p.name+": "+summary.status)
+            if summary.truncated { observations.append("receive latency: \(p.name): additional journeys omitted; aggregate total unavailable.") }
         }
-        if !peerLines.isEmpty { file.snapshot("peers: " + peerLines.joined(separator: "; ")) }
-        if jam.group != nil || jam.metronome.role != .solo || jam.metronome.playing {
-            file.snapshot("server: \(jam.serverStatus) metronome: \(jam.metronome.describe())")
+        if onServer {
+            machine.text("serverStatus", jam.serverStatus)
+            machine.text("metronome", jam.metronome.describe())
+        }
+        machine.text("observations", observations.isEmpty ? nil : observations.joined(separator: " | "))
+        file.readings(machine, rows, at: date)
+
+        // What happened: a run of gaps is one line when it starts (and if it gets clearly worse) and one when it ends.
+        for change in jam.gapEpisodes.second(date, newGaps: newGaps, byStream: gapsByStream) {
+            switch change.kind {
+            case .started, .worse:
+                let kept = file.capture(lookBack: 30, at: date)
+                file.event(.warn, "Gaps", change.words + (kept.map { " - kept: \($0)" } ?? ""), at: date)
+            case .stillGoing:
+                file.event(.info, "Gaps", change.words, at: date)
+            case .ended:
+                file.event(.warn, "Gaps", change.words, at: date)
+            }
+        }
+        for line in jam.connectionLog.second(date, seen) {
+            let kept = line.captureLookBack.flatMap { file.capture(lookBack: $0, at: date) }
+            file.event(line.level, "Peer", line.text + (kept.map { " - kept: \($0)" } ?? ""), at: date)
         }
         file.flush()
+    }
+
+    private static func connectionState(_ state: HeartbeatTiming.State) -> ConnectionLog.State {
+        switch state {
+        case .pending: return .pending
+        case .healthy: return .healthy
+        case .stale: return .stale
+        case .unreachable: return .unreachable
+        }
     }
 }
 
 
 extension Session {
     func testServerStatusLog(_ file: JamLog) { queue.sync { if !useHardware { jam.logFile = file } } }
-    func testFlushServerStatusLog() { queue.sync { if !useHardware { jam.logFile?.flush() } } }
+    func testFlushServerStatusLog() { queue.sync { if !useHardware { jam.logFile?.flushReadings(); jam.logFile?.flush() } } }
 }
 
 // MARK: - Accept connections (Windows MainForm.AcceptConnections: Ed 2026-09-20, tick proofs 2026-09-25, never on another

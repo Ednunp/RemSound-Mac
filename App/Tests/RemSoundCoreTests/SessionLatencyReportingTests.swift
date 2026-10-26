@@ -27,18 +27,19 @@ final class SessionLatencyReportingTests: XCTestCase {
         session.testPeerPacket(Wire.packet(.format,stream:3,payload:wrong.encode()),from:endpoint)
         XCTAssertEqual(session.testProtocolStreamReceipts().map { $0.0 },original)
         let root=try XCTUnwrap(ProcessInfo.processInfo.environment["REMSOUND_TEST_ROOT"])
-        let file=JamLog(directory:URL(fileURLWithPath:root).appendingPathComponent("latency-\(UUID())"),prefix:"latency")
+        // Every second kept, so the readings file has this second's journeys straight away (the observations column).
+        let file=JamLog(directory:URL(fileURLWithPath:root).appendingPathComponent("latency-\(UUID())"),prefix:"latency",everySecond:true)
         session.testServerStatusLog(file)
         var text="";let deadline=ProcessInfo.processInfo.systemUptime+3
-        while !text.contains("peers:"),ProcessInfo.processInfo.systemUptime<deadline {
+        while !text.contains("receive latency:"),ProcessInfo.processInfo.systemUptime<deadline {
             session.testFlushServerStatusLog()
-            if let path=file.currentFile,let handle=try? FileHandle(forReadingFrom:path) {
-                let bytes=try handle.read(upToCount:64*1024) ?? Data();try handle.close()
+            if let path=file.currentReadingsFile,let handle=try? FileHandle(forReadingFrom:path) {
+                let bytes=try handle.read(upToCount:256*1024) ?? Data();try handle.close()
                 text=String(decoding:bytes,as:UTF8.self)
             }
-            if !text.contains("peers:") { Thread.sleep(forTimeInterval:0.005) }
+            if !text.contains("receive latency:") { Thread.sleep(forTimeInterval:0.005) }
         }
-        XCTAssertTrue(text.contains("peers:"),"actual once-per-second reporter ran")
+        XCTAssertTrue(text.contains("receive latency:"),"actual once-per-second reporter ran")
         XCTAssertTrue(text.contains("capture component 3.500 ms"))
         XCTAssertTrue(text.contains("capture component 12.000 ms"))
         XCTAssertTrue(text.contains("complete sum unavailable"))

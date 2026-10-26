@@ -1,6 +1,6 @@
 RemSound for Mac
 
-Version 6.2.1.
+Version 6.2.4.
 
 RemSound lets you hear and send audio between computers. You can play together, listen to a shared session, send a microphone or an application's sound, and bring other people's audio into your DAW.
 
@@ -38,6 +38,8 @@ Contents
 - Plugin control reference
 
 What's new
+
+Version 6.2.4 brings the further logging improvements from RemSound for Windows. The log now holds just what happened, and every line starts with INFO, WARN or ERROR and a category, so you can search for the problems. A peer disconnecting says why, and each connection ends with a short summary. A run of audible gaps is one line when it starts and one when it ends. Everything RemSound measures goes into a spreadsheet file beside the log, with a row for every minute, and every second around a problem. Preferences can open the current log and the logs folder.
 
 Version 6.2.1 brings together the Mac connection, audio, recording and plugin work. Its features include:
 
@@ -323,7 +325,13 @@ Shortcuts and logs
 
 Optional global shortcuts start unset. Focus a shortcut field and press the combination you want; Delete clears it. Most ordinary keys need at least two modifiers, and function keys need one. Reserved system shortcuts cannot be assigned. Push to talk also accepts a single key.
 
-Enable logging only when you need it. The logging choice can be saved with the profile. You can add a marker with Write logs now, choose a log folder, or delete old logs using Preferences. Inspect logs before sharing them because connection names and addresses may be useful diagnostic details.
+Enable logging only when you need it. The logging choice can be saved with the profile. Each run with logging on writes two files in the logs folder, named with the date and time it started and the Mac's name.
+
+The log holds just what happened. Every line starts with INFO, WARN or ERROR and a category, such as Peer, Gaps, Server or Network, so you can search for WARN or ERROR to find the problems. A peer disconnecting says why: it stopped answering and for how long, or this Mac's network changed or it woke from sleep just before. When it comes back, its line says how long it was gone, and each connection ends with a short summary. A run of audible gaps is one line when it starts and one when it ends.
+
+Everything RemSound measures goes into the readings file beside the log, ending in readings.csv, which opens in a spreadsheet. It has a row for every minute, summing that minute up, and a row for every second only around a problem. A reading is written only while the thing it measures is in use. The readings file is written a few minutes behind, so a problem can keep the minutes before it.
+
+Write logs now keeps the five minutes before it in the readings file and writes everything straight away. Open current log and Open logs folder take you to them. You can also choose a log folder, or delete old logs, using Preferences. Inspect logs before sharing them because connection names and addresses may be useful diagnostic details.
 
 Keyboard and VoiceOver
 
@@ -1208,7 +1216,15 @@ Forgets every application RemSound has remembered for sending system audio, afte
 
 Write logs now
 
-Writes a mark into the log now, so the moment can be found when the log is read.
+Writes a mark into the log now, keeps every second of the five minutes before it in the readings file, and writes everything waiting straight away, so the moment can be found when the log is read.
+
+Open current log
+
+Opens the log RemSound is writing now. Logging must be on.
+
+Open logs folder
+
+Opens the folder the logs and their readings files are in, in the Finder.
 
 Warn if the logs folder is large
 

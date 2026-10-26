@@ -653,6 +653,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = browserListener
+        // A wake is a line in the log, and named in the reason of a disconnect soon after (Windows 6.2.3).
+        _ = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                              queue: .main) { [weak self] _ in self?.session.noteWake() }
         let accessibilityCheck = CommandLine.arguments.contains("--check-accessibility")
         NSApp.setActivationPolicy(AppRuntime.configuration.isHeadless || startupHidden ? .accessory : .regular)
         if !nativeProductFixture { configureStatusItem() }
@@ -5480,6 +5483,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             self?.refreshApplicationLists()
         }
         preferencesExtras.note = { [weak self] line in self?.session.note(line) }
+        preferencesExtras.writeLogs = { [weak self] in self?.session.writeLogsNow() }
+        preferencesExtras.openLog = { [weak self] in
+            guard let file = self?.session.currentLog.file else { return false }
+            return NSWorkspace.shared.open(file)
+        }
+        preferencesExtras.openFolder = { [weak self] in
+            guard let folder = self?.session.currentLog.folder else { return }
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(folder)
+        }
+        preferencesExtras.liveLogStem = { [weak self] in self?.session.currentLog.stem }
         preferencesExtras.announce = { [weak self] text in self?.announce(text) }
         preferencesExtras.addControls(to: stack)
         stack.addArrangedSubview(acceptConnectionsLabel)

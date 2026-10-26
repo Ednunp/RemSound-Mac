@@ -1,61 +1,169 @@
 import Foundation
 
-/// The Mac's detailed log (Ed, 2026-09-29: "build comprehensive logging into his mac app so we can test this stuff").
+/// The Mac's detailed log (Ed, 2026-09-29: "build comprehensive logging into his mac app so we can test this stuff"),
+/// laid out as the Windows RemSound's has been since 6.2.3 (its issue 35, Jonathan Schuster: the logs were too much).
 ///
-/// One file per run - `<prefix>-<yyyyMMdd-HHmmss>-1.log` - in a folder the person can choose (Andre can point it into
-/// Dropbox for Ed to read), a new part when a file reaches `maxBytes`, and files older than `keepDays` removed. Lines are
-/// tab-separated like the Windows RemSound's: a kind (`EVT` for an event, `SNAP` for the once-a-second figures), the time
-/// to the millisecond, and the words. Written in batches from the caller's queue - never from an audio callback - and it
-/// never holds passwords, keys or sound.
+/// Two files a run, in a folder the person can choose (Andre can point it into Dropbox for Ed to read), named by when
+/// they started: `<prefix>-yyyy-MM-dd-HHmm-<machine>.log` and, beside it, `...-readings.csv`. Each goes on in a new part
+/// (`-part2`) when it reaches its size, and files older than `keepDays` are removed.
+/// - The LOG holds just what happened: every line `LEVEL<tab>HH:mm:ss.SSS<tab>Category: words`, the level INFO, WARN or
+///   ERROR, so a search for WARN or ERROR finds the problems. Its first line says the version, the machine, the date
+///   and the time zone; a line says when the date changes.
+/// - The READINGS file holds what RemSound measures every second (`ReadingsRecorder`): a row for every minute summing
+///   the whole minute up, and every second only around a problem (`capture`).
+/// Written from the caller's queue - never from an audio callback - and it never holds passwords, keys or sound.
 public final class JamLog {
     public let directory: URL
     public let prefix: String
+    public let machine: String
+    public let about: String
     public let maxBytes: Int
+    public let readingsMaxBytes: Int
     public let keepDays: Int
+    /// What this run's files are called, without the part or the ending.
+    public let stem: String
     public private(set) var currentFile: URL?
+    public private(set) var currentReadingsFile: URL?
+    public var readingsName: String { stem + "-readings.csv" }
+
     private var handle: FileHandle?
     private var written = 0
     private var part = 1
-    private let started: String
+    private var readingsHandle: FileHandle?
+    private var readingsWritten = 0
+    private var readingsPart = 1
     private var pending: [String] = []
-    private static let stamp: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        f.timeZone = TimeZone.current
-        return f
-    }()
+    private var lastDay: String?
+    private var recorder: ReadingsRecorder?
+    private let everySecond: Bool
+    private var closed = false
 
-    public init(directory: URL, prefix: String, maxBytes: Int = 20_000_000, keepDays: Int = 14, now: Date = Date()) {
+    private static func formatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_GB")
+        f.dateFormat = format
+        return f
+    }
+    private static let day = formatter("EEEE d MMMM yyyy")
+    private static let clock = formatter("HH:mm:ss")
+    private static let named = formatter("yyyy-MM-dd-HHmm")
+
+    /// - Parameters:
+    ///   - prefix: what every file starts with ("RemSound-Mac").
+    ///   - machine: whose log it is (the Mac's name, letters and digits only); "" leaves it out of the name.
+    ///   - about: the program and version for the first line ("RemSound for Mac 6.2.4").
+    ///   - everySecond: write every second's readings, not only around a problem (a test's or a deep dive's choice).
+    public init(directory: URL, prefix: String, machine: String = "", about: String = "RemSound for Mac",
+                maxBytes: Int = 20_000_000, readingsMaxBytes: Int = 50_000_000, keepDays: Int = 14,
+                everySecond: Bool = false, now: Date = Date()) {
         self.directory = directory
         self.prefix = prefix
+        self.machine = machine
+        self.about = about
         self.maxBytes = maxBytes
+        self.readingsMaxBytes = readingsMaxBytes
         self.keepDays = keepDays
-        let f = DateFormatter()
-        f.dateFormat = "yyyyMMdd-HHmmss"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        started = f.string(from: now)
+        self.everySecond = everySecond
+        var stem = "\(prefix)-\(Self.named.string(from: now))" + (machine.isEmpty ? "" : "-\(machine)")
+        // Two runs in one minute: the second gets -2, and so on.
+        let base = stem
+        var n = 2
+        while FileManager.default.fileExists(atPath: directory.appendingPathComponent(stem + ".log").path)
+                || FileManager.default.fileExists(atPath: directory.appendingPathComponent(stem + "-readings.csv").path) {
+            stem = "\(base)-\(n)"; n += 1
+        }
+        self.stem = stem
         prune(now: now)
     }
 
-    public func event(_ text: String, at date: Date = Date()) { add("EVT", text, date) }
-    public func snapshot(_ text: String, at date: Date = Date()) { add("SNAP", text, date) }
+    /// A line that does not say its own level or category: sorted by its words (`LogLines.classify`).
+    public func event(_ text: String, at date: Date = Date()) {
+        let c = LogLines.classify(text)
+        event(c.level, c.category, c.text, at: date)
+    }
 
-    private func add(_ kind: String, _ text: String, _ date: Date) {
-        let clean = text.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\t", with: " ")
-        pending.append("\(kind)\t\(Self.stamp.string(from: date))\t\(clean)\n")
+    public func event(_ level: LogLevel, _ category: String, _ text: String, at date: Date = Date()) {
+        guard !closed else { return }
+        if pending.isEmpty && currentFile == nil { pending.append(heading(date)) }
+        let today = Self.day.string(from: date)
+        if let lastDay, lastDay != today {
+            pending.append(LogLines.format(.info, date, "Log", "the date is now \(today)"))
+        }
+        lastDay = today
+        pending.append(LogLines.format(level, date, category, text))
         if pending.count >= 64 { flush() }
     }
 
-    /// Write what is waiting (call once a second, and when stopping).
+    private func heading(_ date: Date) -> String {
+        lastDay = Self.day.string(from: date)
+        let seconds = TimeZone.current.secondsFromGMT(for: date)
+        let zone = String(format: "UTC%@%02d:%02d", seconds < 0 ? "-" : "+", abs(seconds) / 3600, abs(seconds) % 3600 / 60)
+        return LogLines.format(.info, date, "Log", "\(about) log for \(machine.isEmpty ? "this Mac" : machine), started "
+            + "\(Self.day.string(from: date)). Times are this Mac's (\(zone)). What it measures every second is in "
+            + "\(readingsName): a row for every minute, and every second around a problem.")
+    }
+
+    /// One second's readings: the machine's row, and a row for each stream, output or peer.
+    public func readings(_ machine: ReadingsRow, _ rows: [ReadingsRow] = [], at now: Date = Date()) {
+        guard !closed else { return }
+        if recorder == nil {
+            recorder = ReadingsRecorder(schema: machine.schema, everySecond: everySecond) { [weak self] line in
+                self?.writeReadingsLine(line)
+            }
+        }
+        recorder?.second(now, machine: machine, rows: rows)
+    }
+
+    /// Keep every second from `lookBack` ago until 30 seconds from now. Returns the words for the log line that points at
+    /// them ("every second from 10:02:31 to 10:08:01 goes in ...-readings.csv"), nil before anything was measured.
+    @discardableResult
+    public func capture(lookBack: TimeInterval, at now: Date = Date()) -> String? {
+        guard !closed, let recorder else { return nil }
+        let span = recorder.capture(now, lookBack: lookBack)
+        return "every second from \(Self.clock.string(from: span.from)) to \(Self.clock.string(from: span.to)) goes in \(readingsName)"
+    }
+
+    /// Write every readings row that is going to be written, now. `closing`: the minute still open is summed up too.
+    public func flushReadings(closing: Bool = false, at now: Date = Date()) {
+        recorder?.flush(now, closeMinute: closing)
+    }
+
+    private func writeReadingsLine(_ line: String) {
+        let data = Data((line + "\n").utf8)
+        if readingsHandle == nil || (readingsWritten + data.count > readingsMaxBytes && readingsWritten > 0) {
+            let rolling = readingsHandle != nil
+            try? readingsHandle?.close()
+            readingsHandle = nil
+            if rolling { readingsPart += 1 }
+            let url = directory.appendingPathComponent(stem + "-readings" + (readingsPart > 1 ? "-part\(readingsPart)" : "") + ".csv")
+            (readingsHandle, readingsWritten) = open(url)
+            currentReadingsFile = url
+            if rolling, let recorder, !line.hasPrefix("Time,") {
+                let header = Data((recorder.headerLine + "\n").utf8)
+                readingsHandle?.write(header)
+                readingsWritten += header.count
+            }
+        }
+        readingsHandle?.write(data)
+        readingsWritten += data.count
+    }
+
+    /// Write what is waiting (the session calls it once a second, and when stopping).
     public func flush() {
         guard !pending.isEmpty else { return }
         var batch = Data()
         for line in pending {
-            let data = Data(line.utf8)
+            let data = Data((line + "\n").utf8)
             if handle == nil || (written + batch.count + data.count > maxBytes && written + batch.count > 0) {
                 if let handle, !batch.isEmpty { handle.write(batch); written += batch.count }
                 batch = Data()
-                open(next: handle != nil)
+                let rolling = handle != nil
+                try? handle?.close()
+                handle = nil
+                if rolling { part += 1 }
+                let url = directory.appendingPathComponent(stem + (part > 1 ? "-part\(part)" : "") + ".log")
+                (handle, written) = open(url)
+                currentFile = url
             }
             batch.append(data)
         }
@@ -65,29 +173,32 @@ public final class JamLog {
         written += batch.count
     }
 
-    public func close() {
+    /// Stop. `keepReadings`: what waits is written first (RemSound stopping); false lets it go (logging switched off -
+    /// nothing may reach the file after that).
+    public func close(keepReadings: Bool = true, at now: Date = Date()) {
+        if keepReadings { flushReadings(closing: true, at: now) } else { recorder?.forget() }
         flush()
+        closed = true
         try? handle?.close()
         handle = nil
+        try? readingsHandle?.close()
+        readingsHandle = nil
     }
 
-    private func open(next: Bool) {
-        try? handle?.close()
-        handle = nil
-        if next { part += 1 }
+    private func open(_ url: URL) -> (FileHandle?, Int) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent("\(prefix)-\(started)-\(part).log")
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-        handle = try? FileHandle(forWritingTo: url)
+        let handle = try? FileHandle(forWritingTo: url)
         _ = try? handle?.seekToEnd()
-        written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-        currentFile = url
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        return (handle, size)
     }
 
-    /// Remove this app's log files older than `keepDays`.
+    /// Remove this app's logs and readings older than `keepDays`, never this run's own.
     public func prune(now: Date) {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
-        for name in names where name.hasPrefix(prefix + "-") && name.hasSuffix(".log") {
+        for name in names where name.hasPrefix(prefix + "-") && (name.hasSuffix(".log") || name.hasSuffix(".csv"))
+            && !name.hasPrefix(stem) {
             let url = directory.appendingPathComponent(name)
             guard let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date else { continue }
             if now.timeIntervalSince(modified) > Double(keepDays) * 86_400 { try? FileManager.default.removeItem(at: url) }

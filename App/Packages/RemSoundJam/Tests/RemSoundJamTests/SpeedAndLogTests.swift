@@ -67,34 +67,56 @@ final class SpeedAndLogTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jamlog-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // An old file from three weeks ago, and somebody else's file.
-        let old = dir.appendingPathComponent("RemSound-Mac-20260901-100000-1.log")
-        FileManager.default.createFile(atPath: old.path, contents: Data("old".utf8))
-        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-21 * 86_400)], ofItemAtPath: old.path)
+        // An old log and an old readings file from three weeks ago, and somebody else's file.
+        let old = dir.appendingPathComponent("RemSound-Mac-2026-09-01-1000-Andre.log")
+        let oldReadings = dir.appendingPathComponent("RemSound-Mac-2026-09-01-1000-Andre-readings.csv")
+        for file in [old, oldReadings] {
+            FileManager.default.createFile(atPath: file.path, contents: Data("old".utf8))
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-21 * 86_400)], ofItemAtPath: file.path)
+        }
         let theirs = dir.appendingPathComponent("notes.txt")
         FileManager.default.createFile(atPath: theirs.path, contents: Data("keep".utf8))
 
-        let log = JamLog(directory: dir, prefix: "RemSound-Mac", maxBytes: 400)
+        let started = Date()
+        let log = JamLog(directory: dir, prefix: "RemSound-Mac", machine: "Andre", about: "RemSound for Mac 6.2.4", maxBytes: 600,
+                         now: started)
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "a log older than 14 days is removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldReadings.path), "and an old readings file with it")
         XCTAssertTrue(FileManager.default.fileExists(atPath: theirs.path), "and nothing that is not ours")
         log.event("metronome: started\twith a tab\nand a new line")
-        log.snapshot("streams: nothing received")
+        log.event(.warn, "Peer", "Ed disconnected: it stopped answering")
         log.flush()
         let first = try XCTUnwrap(log.currentFile)
-        XCTAssertTrue(first.lastPathComponent.hasPrefix("RemSound-Mac-") && first.lastPathComponent.hasSuffix("-1.log"))
-        let text = try String(contentsOf: first, encoding: .utf8)
-        let lines = text.split(separator: "\n")
-        XCTAssertEqual(lines.count, 2, "one line each, tabs and new lines taken out of the words")
-        XCTAssertTrue(lines[0].hasPrefix("EVT\t") && lines[0].hasSuffix("\tmetronome: started with a tab and a new line"), String(lines[0]))
-        XCTAssertTrue(lines[1].hasPrefix("SNAP\t"))
-        for _ in 0..<20 { log.snapshot(String(repeating: "x", count: 40)) }
+        let named = DateFormatter()
+        named.locale = Locale(identifier: "en_GB"); named.dateFormat = "yyyy-MM-dd-HHmm"
+        XCTAssertEqual(first.lastPathComponent, "RemSound-Mac-\(named.string(from: started))-Andre.log",
+                       "named by when it started, date first, then whose")
+        let lines = try String(contentsOf: first, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 3, "the heading, then one line each")
+        XCTAssertTrue(lines[0].hasPrefix("INFO\t") && lines[0].contains("\tLog: RemSound for Mac 6.2.4 log for Andre, started ")
+                      && lines[0].contains("-readings.csv"), "the first line says what, whose, when and where the readings are: \(lines[0])")
+        XCTAssertTrue(lines[1].hasPrefix("INFO\t") && lines[1].hasSuffix("\tMetronome: started with a tab and a new line"),
+                      "tabs and new lines taken out of the words, the category from how the line starts: \(lines[1])")
+        XCTAssertTrue(lines[2].hasPrefix("WARN\t") && lines[2].hasSuffix("\tPeer: Ed disconnected: it stopped answering"), lines[2])
+
+        // A second run in the same minute gets a name of its own.
+        let again = JamLog(directory: dir, prefix: "RemSound-Mac", machine: "Andre", now: started)
+        XCTAssertNotEqual(again.stem, log.stem)
+        XCTAssertTrue(again.stem.hasSuffix("-2"), again.stem)
+
+        for i in 0..<40 { log.event("metronome: tick \(i) " + String(repeating: "x", count: 40)) }
         log.close()
-        XCTAssertFalse(log.currentFile!.lastPathComponent.hasSuffix("-1.log"),
-                       "a full file goes on in the next part (\(log.currentFile!.lastPathComponent))")
+        XCTAssertTrue(log.currentFile!.lastPathComponent.contains("-part"),
+                      "a full file goes on in the next part (\(log.currentFile!.lastPathComponent))")
         for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".log") {
             let size = try FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path)[.size] as? Int ?? 0
-            XCTAssertLessThanOrEqual(size, 400 + 200, "each part near its limit (\(name): \(size))")
+            XCTAssertLessThanOrEqual(size, 600 + 200, "each part near its limit (\(name): \(size))")
         }
+        log.event("metronome: after closing")
+        log.flush()
+        let all = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(log.stem) }
+            .map { try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8) }.joined()
+        XCTAssertFalse(all.contains("after closing"), "nothing reaches a closed log")
     }
 
     func testTheSecondLinesReadLikeWindows() {

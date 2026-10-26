@@ -111,6 +111,13 @@ final class SessionJam {
     var logFile: JamLog?
     var logFolder: URL?
     var nextLogSecond: TimeInterval = 0
+    /// What the log says about runs of audible gaps and peers connecting and dropping (Windows 6.2.3, its issue 35).
+    var gapEpisodes = GapEpisodes()
+    var connectionLog = ConnectionLog()
+    /// The log's own watch on this Mac's network: a change is a line of its own, and named in a disconnect's reason.
+    var logPathMonitor: NWPathMonitor?
+    var logPathSeen = false
+    var lastNetworkLine = Date.distantPast
 
     var onServer: Bool { group.flatMap { g in g.connectedRelay.map(g.isInGroup) } ?? false }
 
@@ -146,6 +153,11 @@ final class SessionJam {
         framesOut = [:]
         _ = reports.take()
         timedFrom = ""
+        gapEpisodes = GapEpisodes()
+        connectionLog = ConnectionLog()
+        logPathMonitor?.cancel()
+        logPathMonitor = nil
+        logPathSeen = false
     }
 }
 

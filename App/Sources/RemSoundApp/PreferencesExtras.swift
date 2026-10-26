@@ -43,6 +43,8 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
     let clearApplications = NSButton(title: "Clear remembered applications list…", target: nil, action: nil)
     // Logs.
     let writeLogsNow = NSButton(title: "Write logs now", target: nil, action: nil)
+    let openCurrentLog = NSButton(title: "Open current log", target: nil, action: nil)
+    let openLogsFolder = NSButton(title: "Open logs folder", target: nil, action: nil)
     let warnLogs = NSButton(checkboxWithTitle: "Warn at startup if the logs folder is larger than", target: nil, action: nil)
     let warnMegabytes = NSPopUpButton()
     let pruneLogs = NSButton(checkboxWithTitle: "Delete logs older than", target: nil, action: nil)
@@ -56,6 +58,13 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
     var clearRememberedServers: (() -> Void)?
     var clearRememberedApplications: (() -> Void)?
     var note: ((String) -> Void)?
+    /// Write logs now, through the session (the five minutes before kept in the readings file).
+    var writeLogs: (() -> Void)?
+    /// Open the log being written; false when there is none (logging off).
+    var openLog: (() -> Bool)?
+    var openFolder: (() -> Void)?
+    /// What the running log's files start with, so deleting logs never deletes them.
+    var liveLogStem: (() -> String?)?
     var announce: ((String) -> Void)?
 
     private var order: [String] = PreferencesExtras.storedTabOrder()
@@ -180,7 +189,9 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
         row([clearServers, clearApplications])
 
         heading("Logs")
-        writeLogsNow.setAccessibilityHelp("Write a mark into the log now, so the moment can be found when the log is read.")
+        writeLogsNow.setAccessibilityHelp("Write a mark into the log now, and keep every second of the five minutes before it in the readings file, so the moment can be found when the log is read.")
+        openCurrentLog.setAccessibilityHelp("Open the log RemSound is writing now. Logging must be on.")
+        openLogsFolder.setAccessibilityHelp("Open the folder the logs and their readings files are in, in the Finder.")
         warnLogs.state = s.bool(forKey: LogFolderCare.warnKey) ? .on : .off
         warnLogs.setAccessibilityHelp("Off by default. On, RemSound warns when it opens if the logs folder has grown past the size chosen.")
         warnMegabytes.addItems(withTitles: LogFolderCare.warnChoices.map { "\($0) megabytes" })
@@ -194,7 +205,7 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
         pruneDays.selectItem(at: max(0, days - 1))
         pruneDays.setAccessibilityLabel("Delete logs older than")
         deleteAllLogs.setAccessibilityHelp("Delete every log except those RemSound is writing now, after asking. This cannot be undone.")
-        stack.addArrangedSubview(writeLogsNow)
+        row([writeLogsNow, openCurrentLog, openLogsFolder])
         row([warnLogs, warnMegabytes])
         row([pruneLogs, pruneDays])
         stack.addArrangedSubview(deleteAllLogs)
@@ -213,6 +224,8 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
         clearServers.target = self; clearServers.action = #selector(clearServersPressed)
         clearApplications.target = self; clearApplications.action = #selector(clearApplicationsPressed)
         writeLogsNow.target = self; writeLogsNow.action = #selector(writeLogsNowPressed)
+        openCurrentLog.target = self; openCurrentLog.action = #selector(openCurrentLogPressed)
+        openLogsFolder.target = self; openLogsFolder.action = #selector(openLogsFolderPressed)
         deleteAllLogs.target = self; deleteAllLogs.action = #selector(deleteAllLogsPressed)
         refreshDependents()
 
@@ -222,7 +235,8 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
             (startMinimised, "startminimised"), (startWithProfile, "startwithprofile"), (startProfile, "startwithprofile"),
             (helpMessage, "helpmessage"), (chooseProfilesFolder, "profilesfolder"), (defaultProfilesFolder, "profilesfolder"),
             (profilesFolderStatus, "profilesfolder"), (clearServers, "clearservers"), (clearApplications, "clearapplications"),
-            (writeLogsNow, "writelogsnow"), (warnLogs, "warnlogs"), (warnMegabytes, "warnlogs"), (pruneLogs, "prunelogs"),
+            (writeLogsNow, "writelogsnow"), (openCurrentLog, "opencurrentlog"), (openLogsFolder, "openlogsfolder"),
+            (warnLogs, "warnlogs"), (warnMegabytes, "warnlogs"), (pruneLogs, "prunelogs"),
             (pruneDays, "prunelogs"), (deleteAllLogs, "deletealllogs"),
         ]
         for (view, key) in help { view.identifier = NSUserInterfaceItemIdentifier("help-dialog-preferences-" + key) }
@@ -232,7 +246,7 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
     var controlOrder: [NSView] {
         [theme, tabOrderList, moveTabUp, moveTabDown, showPanEqTab, showRememberedPeers, rememberWindow,
          startMinimised, startWithProfile, startProfile, helpMessage, chooseProfilesFolder, defaultProfilesFolder,
-         profilesFolderStatus, clearServers, clearApplications, writeLogsNow, warnLogs, warnMegabytes, pruneLogs, pruneDays,
+         profilesFolderStatus, clearServers, clearApplications, writeLogsNow, openCurrentLog, openLogsFolder, warnLogs, warnMegabytes, pruneLogs, pruneDays,
          deleteAllLogs]
     }
 
@@ -349,13 +363,20 @@ final class PreferencesExtras: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     @objc private func writeLogsNowPressed() {
-        note?("user requested write logs now")
+        if let writeLogs { writeLogs() } else { note?("user requested write logs now") }
         announce?("Logs written.")
     }
 
+    @objc private func openCurrentLogPressed() {
+        if openLog?() != true { announce?("No log is being written. Turn on logging first.") }
+    }
+
+    @objc private func openLogsFolderPressed() { openFolder?() }
+
     @objc private func deleteAllLogsPressed() {
         guard confirm("Delete all logs?", "This permanently deletes every log file in the logs folder except the ones RemSound is writing now. This cannot be undone.", "Delete") else { return }
-        let deleted = Self.deleteLogs { LogFolderCare.all($0, now: Date()) }
+        let live = liveLogStem?()
+        let deleted = Self.deleteLogs { LogFolderCare.all($0, now: Date(), sparing: live) }
         note?("logs: deleted all (\(deleted) file\(deleted == 1 ? "" : "s"))")
         announce?("\(deleted) log file\(deleted == 1 ? "" : "s") deleted.")
     }

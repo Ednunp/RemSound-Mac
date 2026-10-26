@@ -37,16 +37,21 @@ public enum LogFolderCare {
             + "You can delete old logs in Preferences, General."
     }
 
-    private static func deletable(_ file: File, now: Date) -> Bool {
-        !inUse.contains(file.name) && now.timeIntervalSince(file.modified) >= recentlyWritten
+    /// `live`: what the running log's files start with (its log, its readings file and their parts) - never deleted,
+    /// however long since they were last written (a quiet log can go ten minutes without a line).
+    private static func deletable(_ file: File, now: Date, sparing live: String?) -> Bool {
+        if let live, !live.isEmpty, file.name.hasPrefix(live) { return false }
+        return !inUse.contains(file.name) && now.timeIntervalSince(file.modified) >= recentlyWritten
     }
 
     /// The logs older than `days` days.
-    public static func older(_ files: [File], thanDays days: Int, now: Date) -> [File] {
+    public static func older(_ files: [File], thanDays days: Int, now: Date, sparing live: String? = nil) -> [File] {
         let limit = TimeInterval(min(max(days, pruneDayRange.lowerBound), pruneDayRange.upperBound)) * 86_400
-        return files.filter { deletable($0, now: now) && now.timeIntervalSince($0.modified) > limit }
+        return files.filter { deletable($0, now: now, sparing: live) && now.timeIntervalSince($0.modified) > limit }
     }
 
     /// Every log but those in use.
-    public static func all(_ files: [File], now: Date) -> [File] { files.filter { deletable($0, now: now) } }
+    public static func all(_ files: [File], now: Date, sparing live: String? = nil) -> [File] {
+        files.filter { deletable($0, now: now, sparing: live) }
+    }
 }
